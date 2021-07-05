@@ -2,3 +2,4 @@
 
 obj-$(CONFIG_SIFIVE_CCACHE)	+= sifive_ccache.o
 obj-$(CONFIG_SIFIVE_ECACHE_PMU)	+= sifive_ecache_pmu.o
+obj-$(CONFIG_SIFIVE_PL2)	+= sifive_pl2_cache.o

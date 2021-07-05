@@ -16,4 +16,11 @@ config SIFIVE_ECACHE_PMU
 	  use the perf tool to select the extensible cache pmu events
 	  to monitor program or whole system cache performance.
 
+config SIFIVE_PL2
+	bool "Sifive private L2 Cache controller"
+	depends on PERF_EVENTS
+	default y
+	help
+	  Support for the private L2 cache controller on SiFive platforms.
+
 endif
