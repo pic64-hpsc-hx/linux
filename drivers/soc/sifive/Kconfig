@@ -4,6 +4,7 @@ if SOC_SIFIVE || SOC_STARFIVE
 
 config SIFIVE_CCACHE
 	bool "Sifive Composable Cache controller"
+	depends on PERF_EVENTS
 	help
 	  Support for the composable cache controller on SiFive platforms.
 
