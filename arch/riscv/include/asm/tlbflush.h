@@ -61,4 +61,11 @@ static inline void flush_tlb_kernel_range(unsigned long start,
 	flush_tlb_all();
 }
 
+/* Flush a range of kernel pages without broadcasting */
+static inline void local_flush_tlb_kernel_range(unsigned long start,
+						unsigned long end)
+{
+	local_flush_tlb_all();
+}
+
 #endif /* _ASM_RISCV_TLBFLUSH_H */
