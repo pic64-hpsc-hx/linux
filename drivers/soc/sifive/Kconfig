@@ -24,4 +24,13 @@ config SIFIVE_PL2
 	help
 	  Support for the private L2 cache controller on SiFive platforms.
 
+config SIFIVE_WGCHECKER
+	bool "Sifive world guard checker"
+	default y
+	help
+	  Provide driver for worldguard checkers. This driver registers
+	  interrupt handler for each WorldGuard Checker appears on the DT, and
+	  only reports, but do not handle the first access violation to the
+	  protected range.
+
 endif
