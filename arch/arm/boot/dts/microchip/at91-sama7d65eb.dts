@@ -126,6 +126,49 @@
 	status = "okay";
 };
 
+&dsi {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 {
+			reg = <0>;
+			dsi_in: endpoint {
+				remote-endpoint = <&xlcdc_out>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dsi_out: endpoint {
+				remote-endpoint = <&mipi_in_panel>;
+			};
+		};
+	};
+
+	panel@0 {
+		reg = <0>;
+		compatible = "hannstar,hsd060bhw4";
+		backlight = <&backlight>;
+		vcc-supply = <&mic23150_reg>;
+		iovcc-supply = <&vldo1>;
+		reset-gpio =  <&pioa PIN_PD7 GPIO_ACTIVE_LOW>;
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			mipi_in_panel: endpoint {
+				remote-endpoint = <&dsi_out>;
+			};
+		};
+	};
+};
+
 &flx0 {
 	atmel,flexcom-mode = <ATMEL_FLEXCOM_MODE_TWI>;
 	status = "okay";
@@ -488,6 +531,11 @@
 		bias-pull-up;
 	};
 
+	pinctrl_lcd_pwm: lcd-pwm {
+		pinmux = <PIN_PD6__LCDC_PWM>;
+		bias-disable;
+	};
+
 	pinctrl_mxt_irq: pinctrl_mxt_irq {
 		pinmux = <PIN_PD4__GPIO>;
 		bias-pull-up;
@@ -627,4 +675,22 @@
 &vddout25 {
 	vin-supply = <&vdd_3v3>;
 	status = "okay";
+};
+
+&xlcdc {
+	status = "okay";
+	hlcdc-display-controller {
+		port@0 {
+			xlcdc_out: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&dsi_in>;
+			};
+		};
+	};
+
+	xlcdc_pwm: hlcdc-pwm {
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_lcd_pwm>;
+		status = "okay";
+	};
 };
