@@ -616,7 +616,7 @@ static void riscv_iommu_mm_release(struct mmu_notifier *mn, struct mm_struct *mm
 
 static const struct mmu_notifier_ops riscv_iommu_mmuops = {
 	.release = riscv_iommu_mm_release,
-	.invalidate_range = riscv_iommu_mm_invalidate,
+	.arch_invalidate_secondary_tlbs = riscv_iommu_mm_invalidate,
 };
 
 /* Command queue primary interrupt handler */
