@@ -38,6 +38,11 @@ properties:
           - const: riscv,iommu
       - items:
           - enum:
+              - microchip,p64h-iommu
+          - const: sifive,iommu1
+          - const: riscv,iommu
+      - items:
+          - enum:
               - pci1efd,edf1
           - const: riscv,pci-iommu
 
