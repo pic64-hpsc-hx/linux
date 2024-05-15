@@ -4,6 +4,7 @@
  *
  * Copyright © 2022-2023 Rivos Inc.
  * Copyright © 2023 FORTH-ICS/CARV
+ * Copyright © 2024 Microchip
  *
  * Authors
  *	Tomasz Jeznach <tjeznach@rivosinc.com>
@@ -136,7 +137,7 @@ static void riscv_iommu_queue_free(struct riscv_iommu_device *iommu,
 		else
 			dmam_free_coherent(iommu->dev, size, q->base, q->base_dma);
 	}
-	if (q->irq)
+	if (q->irq && (!(iommu->features & IOMMU_FEATURE_SINGLE_VECTOR)))
 		free_irq(q->irq, q);
 }
 
@@ -290,10 +291,13 @@ static int riscv_iommu_queue_init(struct riscv_iommu_device *iommu, int queue_id
 	}
 
  irq:
-	if (request_threaded_irq(irq, irq_check, irq_process, IRQF_ONESHOT | IRQF_SHARED,
-				 dev_name(dev), q)) {
-		dev_err(dev, "fail to request irq %d for %s\n", irq, name);
-		goto fail;
+	/* do not request interrupt for single interrupt */
+	if (!(iommu->features & IOMMU_FEATURE_SINGLE_VECTOR)) {
+		if (request_threaded_irq(irq, irq_check, irq_process, IRQF_ONESHOT | IRQF_SHARED,
+					dev_name(dev), q)) {
+			dev_err(dev, "fail to request irq %d for %s\n", irq, name);
+			goto fail;
+		}
 	}
 
 	q->irq = irq;
@@ -533,7 +537,7 @@ static bool riscv_iommu_post_sync(struct riscv_iommu_device *iommu,
 }
 
 static bool riscv_iommu_post(struct riscv_iommu_device *iommu,
-			     struct riscv_iommu_command *cmd)
+				 struct riscv_iommu_command *cmd)
 {
 	return riscv_iommu_post_sync(iommu, cmd, false);
 }
@@ -644,6 +648,10 @@ static irqreturn_t riscv_iommu_cmdq_process(int irq, void *data)
 	ctrl = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_CQCSR);
 	if (ctrl & (RISCV_IOMMU_CQCSR_CQMF |
 		    RISCV_IOMMU_CQCSR_CMD_TO | RISCV_IOMMU_CQCSR_CMD_ILL)) {
+		/* reset command queue */
+		unsigned head = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_CQH);
+		riscv_iommu_writel(iommu, RISCV_IOMMU_REG_CQT, head);
+		iommu->cmdq.lui = head;
 		riscv_iommu_queue_ctrl(iommu, &iommu->cmdq, ctrl);
 		dev_warn_ratelimited(iommu->dev,
 				     "Command queue error: fault: %d tout: %d err: %d\n",
@@ -928,6 +936,33 @@ static irqreturn_t riscv_iommu_priq_process(int irq, void *data)
 		riscv_iommu_queue_release(iommu, q, cnt);
 	} while (1);
 
+	return IRQ_HANDLED;
+}
+
+/*
+ * single interrupt handler
+ */
+static irqreturn_t riscv_iommu_single_irq_process(int irq, void *data)
+{
+	struct riscv_iommu_device *iommu = (struct riscv_iommu_device *)data;
+	uint32_t reg = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_IPSR);
+
+	while (reg) {
+		if (reg & RISCV_IOMMU_IPSR_CIP) {
+			riscv_iommu_cmdq_process(irq, (void *) &iommu->cmdq);
+		}
+		if (reg & RISCV_IOMMU_IPSR_FIP) {
+			riscv_iommu_fltq_process(irq, (void *) &iommu->fltq);
+		}
+		if (reg & RISCV_IOMMU_IPSR_PIP) {
+			riscv_iommu_priq_process(irq, (void *) &iommu->priq);
+		}
+		if (reg & RISCV_IOMMU_IPSR_PMIP) {
+			/* not managed, just clear pending bit */
+			riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IPSR, RISCV_IOMMU_IPSR_PMIP);
+		}
+		reg = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_IPSR);
+	}
 	return IRQ_HANDLED;
 }
 
@@ -1412,9 +1447,6 @@ static struct iommu_domain *riscv_iommu_domain_alloc(unsigned type)
 	domain->mode = RISCV_IOMMU_DC_FSC_MODE_BARE;
 	domain->pscid = ida_alloc_range(&riscv_iommu_pscids, 1,
 					RISCV_IOMMU_MAX_PSCID, GFP_KERNEL);
-
-	printk("domain alloc %u\n", domain->pscid);
-
 	return &domain->domain;
 }
 
@@ -2024,10 +2056,16 @@ void riscv_iommu_remove(struct riscv_iommu_device *iommu)
 	iommu_device_unregister(&iommu->iommu);
 	iommu_device_sysfs_remove(&iommu->iommu);
 	riscv_iommu_enable(iommu, RISCV_IOMMU_DDTP_MODE_OFF);
+	if (iommu->features & IOMMU_FEATURE_SINGLE_VECTOR) {
+		/* All queue irqs have the same number */
+		free_irq(iommu->irq_cmdq, &iommu->cmdq);
+	}
 	riscv_iommu_queue_free(iommu, &iommu->cmdq);
 	riscv_iommu_queue_free(iommu, &iommu->fltq);
 	riscv_iommu_queue_free(iommu, &iommu->priq);
 	iopf_queue_free(iommu->pq_work);
+	if (iommu->custom_uninit)
+		iommu->custom_uninit(iommu);
 }
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu)
@@ -2073,6 +2111,21 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 			   RISCV_IOMMU_IPSR_PMIP | RISCV_IOMMU_IPSR_PIP);
 	spin_lock_init(&iommu->cq_lock);
 	mutex_init(&iommu->eps_mutex);
+
+	/* check for single interrupt before init queues */
+	if (iommu->features & IOMMU_FEATURE_SINGLE_VECTOR) {
+		/* set single interrupt handler */
+		/* all queues have the same interrupt numbers */
+		if (request_irq(iommu->irq_cmdq,
+						riscv_iommu_single_irq_process,
+						IRQF_ONESHOT | IRQF_SHARED,
+						dev_name(dev), iommu)) {
+			dev_err(dev, "fail to request irq %d for %s\n",
+				iommu->irq_cmdq, dev_name(dev));
+			goto fail;
+		}
+	}
+
 	ret = riscv_iommu_queue_init(iommu, RISCV_IOMMU_COMMAND_QUEUE);
 	if (ret)
 		goto fail;
@@ -2119,9 +2172,17 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 		goto fail;
 	}
 
+	if (iommu->custom_init)
+		iommu->custom_init(iommu);
 	return 0;
  fail:
+	if (iommu->custom_uninit)
+		iommu->custom_uninit(iommu);
 	riscv_iommu_enable(iommu, RISCV_IOMMU_DDTP_MODE_OFF);
+	if (iommu->features & IOMMU_FEATURE_SINGLE_VECTOR) {
+		/* All queues have the same interrupt number */
+		free_irq(iommu->irq_cmdq, &iommu->cmdq);
+	}
 	riscv_iommu_queue_free(iommu, &iommu->priq);
 	riscv_iommu_queue_free(iommu, &iommu->fltq);
 	riscv_iommu_queue_free(iommu, &iommu->cmdq);

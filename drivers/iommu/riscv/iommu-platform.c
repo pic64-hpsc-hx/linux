@@ -3,6 +3,7 @@
  * RISC-V IOMMU as a platform device
  *
  * Copyright © 2023 FORTH-ICS/CARV
+ * Copyright © 2024 Microchip
  *
  * Author: Nick Kossifidis <mick@ics.forth.gr>
  */
@@ -14,6 +15,54 @@
 
 #include "iommu-bits.h"
 #include "iommu.h"
+
+/* SiFive IOMMU-22 Custom */
+#define SIFIVE_IOMMU22_REG_CUSTOM			0x000C	/* Custom IOMMU control */
+#define SIFIVE_IOMMU22_CUSTOM_TIMEOUT		GENMASK(7, 0)
+#define SIFIVE_IOMMU22_CUSTOM_MPAGE			BIT(8)
+#define SIFIVE_IOMMU22_CUSTOM_GPAGE			BIT(9)
+#define SIFIVE_IOMMU22_CUSTOM_TPAGE			BIT(10)
+#define SIFIVE_IOMMU22_CUSTOM_PPAGE			BIT(11)
+#define SIFIVE_IOMMU22_CUSTOM_PTE_DISABLE	BIT(12)
+#define SIFIVE_IOMMU22_CUSTOM_CTE_DISABLE	BIT(13)
+#define SIFIVE_IOMMU22_CUSTOM_CG_DIS		BIT(14)
+
+#define SIFIVE_IOMMU22_REG_CUSTOM_VID		0x02B0	/* SiFive Version ID */
+#define SIFIVE_IOMMU22_CUSTOM_VID_MAJOR		GENMASK(15, 8)
+#define SIFIVE_IOMMU22_CUSTOM_VID_MINOR		GENMASK(7, 0)
+#define SIFIVE_IOMMU22_CUSTOM_VID_DEFAULT	0x00000100
+
+static int sifive_iommu22_custom_init(struct riscv_iommu_device *iommu)
+{
+	u32 val;
+
+	val = riscv_iommu_readl(iommu, SIFIVE_IOMMU22_REG_CUSTOM_VID);
+	if (val != SIFIVE_IOMMU22_CUSTOM_VID_DEFAULT)
+		return -EINVAL;
+
+	val  = FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_TIMEOUT, 4);
+	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_MPAGE, 0);
+	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_GPAGE, 0);
+	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_TPAGE, 0);
+	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_PPAGE, 0);
+	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_PTE_DISABLE, 0);
+	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_CTE_DISABLE, 0);
+	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_CG_DIS, 1);
+
+	riscv_iommu_writel(iommu, SIFIVE_IOMMU22_REG_CUSTOM, val);
+
+	/* Tiled to 0 for IOMMU-22 */
+	val = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_FCTL);
+	if (FIELD_GET(RISCV_IOMMU_FCTL_GXL, val))
+		return -EINVAL;
+
+	return 0;
+}
+
+static void sifive_iommu22_custom_uninit(struct riscv_iommu_device *iommu)
+{
+	riscv_iommu_writel(iommu, SIFIVE_IOMMU22_REG_CUSTOM, 0);
+}
 
 static int riscv_iommu_platform_probe(struct platform_device *pdev)
 {
@@ -60,44 +109,69 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 	/* For now we only support WSIs until we have AIA support */
 	ret = FIELD_GET(RISCV_IOMMU_CAP_IGS, iommu->cap);
 	if (ret == RISCV_IOMMU_CAP_IGS_MSI) {
-		dev_err(dev, "IOMMU only supports MSIs\n");
+		dev_err(dev, "IOMMU only supports WSIs\n");
 		goto fail;
 	}
 
-	/* Parse IRQ assignment */
-	irq = platform_get_irq_byname_optional(pdev, "cmdq");
-	if (irq > 0)
-		iommu->irq_cmdq = irq;
-	else {
-		dev_err(dev, "no IRQ provided for the command queue\n");
-		goto fail;
+	if (of_device_is_compatible(dev->of_node, "microchip,p64h-iommu") ||
+		of_device_is_compatible(dev->of_node, "sifive,iommu1")) {
+		/* Sifive IOMMU custom functions */
+		iommu->custom_init = sifive_iommu22_custom_init;
+		iommu->custom_uninit = sifive_iommu22_custom_uninit;
 	}
 
-	irq = platform_get_irq_byname_optional(pdev, "fltq");
-	if (irq > 0)
-		iommu->irq_fltq = irq;
-	else {
-		dev_err(dev, "no IRQ provided for the fault/event queue\n");
-		goto fail;
-	}
-
-	if (iommu->cap & RISCV_IOMMU_CAP_HPM) {
-		irq = platform_get_irq_byname_optional(pdev, "pm");
-		if (irq > 0)
-			iommu->irq_pm = irq;
-		else {
-			dev_err(dev, "no IRQ provided for performance monitoring\n");
+	/* check if the implementation only supports single vector */
+	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IVEC, 0xFFFF);
+	if (!riscv_iommu_readl(iommu, RISCV_IOMMU_REG_IVEC)) {
+		/* single interrupt */
+		iommu->features |= IOMMU_FEATURE_SINGLE_VECTOR;
+		irq = platform_get_irq(to_platform_device(dev), 0);
+		if (irq < 0) {
+			dev_err(dev, "cannot allocate IRQs (%d)\n", ret);
 			goto fail;
 		}
-	}
-
-	if (iommu->cap & RISCV_IOMMU_CAP_ATS) {
-		irq = platform_get_irq_byname_optional(pdev, "priq");
+		iommu->irq_cmdq = irq;
+		iommu->irq_fltq = irq;
+		iommu->irq_pm   = irq;
+		iommu->irq_priq = irq;
+	} else {
+		/* reset interrupt cause vector */
+		riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IVEC, 0x0);
+		/* Parse IRQ assignment */
+		irq = platform_get_irq_byname_optional(pdev, "cmdq");
 		if (irq > 0)
-			iommu->irq_priq = irq;
+			iommu->irq_cmdq = irq;
 		else {
-			dev_err(dev, "no IRQ provided for the page-request queue\n");
+			dev_err(dev, "no IRQ provided for the command queue\n");
 			goto fail;
+		}
+
+		irq = platform_get_irq_byname_optional(pdev, "fltq");
+		if (irq > 0)
+			iommu->irq_fltq = irq;
+		else {
+			dev_err(dev, "no IRQ provided for the fault/event queue\n");
+			goto fail;
+		}
+
+		if (iommu->cap & RISCV_IOMMU_CAP_HPM) {
+			irq = platform_get_irq_byname_optional(pdev, "pm");
+			if (irq > 0)
+				iommu->irq_pm = irq;
+			else {
+				dev_err(dev, "no IRQ provided for performance monitoring\n");
+				goto fail;
+			}
+		}
+
+		if (iommu->cap & RISCV_IOMMU_CAP_ATS) {
+			irq = platform_get_irq_byname_optional(pdev, "priq");
+			if (irq > 0)
+				iommu->irq_priq = irq;
+			else {
+				dev_err(dev, "no IRQ provided for the page-request queue\n");
+				goto fail;
+			}
 		}
 	}
 
@@ -139,6 +213,8 @@ static void riscv_iommu_platform_shutdown(struct platform_device *pdev)
 };
 
 static const struct of_device_id riscv_iommu_of_match[] = {
+	{.compatible = "microchip,p64h-iommu",},
+	{.compatible = "sifive,iommu1",},
 	{.compatible = "riscv,iommu",},
 	{},
 };

@@ -2,6 +2,7 @@
 /*
  * Copyright © 2022-2023 Rivos Inc.
  * Copyright © 2023 FORTH-ICS/CARV
+ * Copyright © 2024 Microchip
  *
  * RISC-V Ziommu - IOMMU Interface Specification.
  *
@@ -30,6 +31,9 @@
 #define IOMMU_PAGE_SIZE_1G	BIT_ULL(30)
 #define IOMMU_PAGE_SIZE_512G	BIT_ULL(39)
 
+/* IOMMU features */
+#define IOMMU_FEATURE_SINGLE_VECTOR BIT_ULL(0) /* true if single interrupt */
+
 struct riscv_iommu_queue {
 	dma_addr_t base_dma;	/* ring buffer bus address */
 	void *base;		/* ring buffer pointer */
@@ -55,6 +59,13 @@ struct riscv_iommu_device {
 	/* hardware control register space */
 	void __iomem *reg;
 	resource_size_t reg_phys;
+
+	/* features */
+	unsigned long features;
+
+	/* custom callback function */
+	int (*custom_init)(struct riscv_iommu_device *iommu);
+	void (*custom_uninit)(struct riscv_iommu_device *iommu);
 
 	/* IRQs for the various queues */
 	int irq_cmdq;
