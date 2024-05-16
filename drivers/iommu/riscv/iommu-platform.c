@@ -36,10 +36,6 @@ static int sifive_iommu22_custom_init(struct riscv_iommu_device *iommu)
 {
 	u32 val;
 
-	val = riscv_iommu_readl(iommu, SIFIVE_IOMMU22_REG_CUSTOM_VID);
-	if (val != SIFIVE_IOMMU22_CUSTOM_VID_DEFAULT)
-		return -EINVAL;
-
 	val  = FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_TIMEOUT, 4);
 	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_MPAGE, 0);
 	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_GPAGE, 0);
@@ -50,11 +46,6 @@ static int sifive_iommu22_custom_init(struct riscv_iommu_device *iommu)
 	val |= FIELD_PREP(SIFIVE_IOMMU22_CUSTOM_CG_DIS, 1);
 
 	riscv_iommu_writel(iommu, SIFIVE_IOMMU22_REG_CUSTOM, val);
-
-	/* Tiled to 0 for IOMMU-22 */
-	val = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_FCTL);
-	if (FIELD_GET(RISCV_IOMMU_FCTL_GXL, val))
-		return -EINVAL;
 
 	return 0;
 }
