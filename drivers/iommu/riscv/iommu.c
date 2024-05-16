@@ -2116,12 +2116,10 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	if (iommu->features & IOMMU_FEATURE_SINGLE_VECTOR) {
 		/* set single interrupt handler */
 		/* all queues have the same interrupt numbers */
-		if (request_irq(iommu->irq_cmdq,
-						riscv_iommu_single_irq_process,
-						IRQF_ONESHOT | IRQF_SHARED,
-						dev_name(dev), iommu)) {
-			dev_err(dev, "fail to request irq %d for %s\n",
-				iommu->irq_cmdq, dev_name(dev));
+		ret = request_irq(iommu->irq_cmdq, riscv_iommu_single_irq_process,
+				  IRQF_ONESHOT | IRQF_SHARED, dev_name(dev), iommu);
+		if (ret) {
+			dev_err(dev, "fail to request irq %d: %d\n", iommu->irq_cmdq, ret);
 			goto fail;
 		}
 	}
