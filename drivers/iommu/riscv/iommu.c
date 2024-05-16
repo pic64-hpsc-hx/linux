@@ -2175,9 +2175,8 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	if (iommu->custom_init)
 		iommu->custom_init(iommu);
 	return 0;
+
  fail:
-	if (iommu->custom_uninit)
-		iommu->custom_uninit(iommu);
 	riscv_iommu_enable(iommu, RISCV_IOMMU_DDTP_MODE_OFF);
 	if (iommu->features & IOMMU_FEATURE_SINGLE_VECTOR) {
 		/* All queues have the same interrupt number */
