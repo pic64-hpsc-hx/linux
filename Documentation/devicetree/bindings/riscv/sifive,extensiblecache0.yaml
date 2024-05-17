@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+# Copyright (C) 2023 SiFive, Inc.
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/riscv/sifive,extensiblecache0.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: SiFive Extensible Cache Controller
+
+maintainers:
+  - Eric Lin      <eric.lin@sifive.com>
+
+description:
+  The SiFive Extensible Controller is a cache generator of high-performance extensible
+  system cache.
+  All the properties in ePAPR/DeviceTree specification applies for this platform.
+
+allOf:
+  - $ref: /schemas/cache-controller.yaml#
+
+select:
+  properties:
+    compatible:
+      contains:
+        enum:
+          - sifive,extensiblecache0
+
+  required:
+    - compatible
+
+properties:
+  compatible:
+    items:
+      - enum:
+          - sifive,extensiblecache0
+      - const: cache
+
+  cache-block-size:
+    const: 64
+
+  cache-level:
+    const: 3
+
+  cache-sets:
+    const: 1024
+
+  cache-size:
+    const: 1048576
+
+  cache-unified: true
+
+  interrupts:
+    minItems: 1
+    maxItems: 2
+
+  reg:
+    maxItems: 1
+
+  '#address-cells':
+    const: 1
+
+  '#size-cells':
+    const: 1
+
+additionalProperties: false
+
+required:
+  - compatible
+  - cache-block-size
+  - cache-level
+  - cache-sets
+  - cache-size
+  - cache-unified
+  - interrupts
+  - reg
+
+examples:
+  - |
+    cache-controller0@2010000 {
+      #address-cells = <1>;
+      #size-cells = <1>;
+      cache-block-size = <64>;
+      cache-level = <3>;
+      cache-sets = <1024>;
+      cache-size = <1048576>;
+      cache-unified;
+      compatible = "sifive,extensiblecache0", "cache";
+      reg = <0x2010000 0x4000>;
+      interrupt-parent = <&L28>;
+      interrupts = <2 4>;
+    };

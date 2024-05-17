@@ -4,7 +4,33 @@ if SOC_SIFIVE || SOC_STARFIVE
 
 config SIFIVE_CCACHE
 	bool "Sifive Composable Cache controller"
+	depends on PERF_EVENTS
 	help
 	  Support for the composable cache controller on SiFive platforms.
+
+config SIFIVE_ECACHE_PMU
+	bool "Sifive Extensible Cache PMU"
+	depends on PERF_EVENTS
+	help
+	  Support for the extensible cache pmu on SiFive platforms.
+	  SiFive extensible cache is shared by all cores. User can
+	  use the perf tool to select the extensible cache pmu events
+	  to monitor program or whole system cache performance.
+
+config SIFIVE_PL2
+	bool "Sifive private L2 Cache controller"
+	depends on PERF_EVENTS
+	default y
+	help
+	  Support for the private L2 cache controller on SiFive platforms.
+
+config SIFIVE_WGCHECKER
+	bool "Sifive world guard checker"
+	default y
+	help
+	  Provide driver for worldguard checkers. This driver registers
+	  interrupt handler for each WorldGuard Checker appears on the DT, and
+	  only reports, but do not handle the first access violation to the
+	  protected range.
 
 endif
