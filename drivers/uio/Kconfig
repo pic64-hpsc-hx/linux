@@ -182,4 +182,10 @@ config UIO_DFL
 	    opae-sdk/tools/libopaeuio/
 
 	  If you compile this as a module, it will be called uio_dfl.
+
+config UIO_MESA
+    bool "Microchip UIO_MESA kernel module"
+    help
+      Enable kernel module support for Application Complex Microchip UIO MESA driver
+
 endif

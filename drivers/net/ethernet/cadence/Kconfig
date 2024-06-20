@@ -34,6 +34,14 @@ config MACB
 	  To compile this driver as a module, choose M here: the module
 	  will be macb.
 
+config HPSC_MACB
+	bool "HPSC MACB/GEM support"
+	depends on MACB
+	default n
+	help
+	  HPSC custom configuration for Cadence MACB ethernet interface. Say Y to include
+	  support for the custom HPSC MACB/GEM.
+
 config MACB_USE_HWSTAMP
 	bool "Use IEEE 1588 hwstamp"
 	depends on MACB

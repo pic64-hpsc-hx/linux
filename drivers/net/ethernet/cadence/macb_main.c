@@ -4064,7 +4064,12 @@ static int macb_init(struct platform_device *pdev)
 	 * register mapping but we don't want to test the queue index then
 	 * compute the corresponding register offset at run time.
 	 */
+	// temporary, will remove once we have complete hw	
+#ifdef CONFIG_HPSC_MACB
+	for (hw_q = 0, q = 0; hw_q < 1; ++hw_q) {
+#else
 	for (hw_q = 0, q = 0; hw_q < MACB_MAX_QUEUES; ++hw_q) {
+#endif
 		if (!(bp->queue_mask & (1 << hw_q)))
 			continue;
 
@@ -4987,6 +4992,12 @@ static int macb_probe(struct platform_device *pdev)
 	native_io = hw_is_native_io(mem);
 
 	macb_probe_queues(mem, native_io, &queue_mask, &num_queues);
+
+// tempory, will remove when we have full system
+#if(CONFIG_HPSC_MACB)
+        num_queues = 1;
+#endif
+
 	dev = alloc_etherdev_mq(sizeof(*bp), num_queues);
 	if (!dev) {
 		err = -ENOMEM;
@@ -5061,7 +5072,11 @@ static int macb_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
 	if (GEM_BFEXT(DAW64, gem_readl(bp, DCFG6))) {
+#ifdef CONFIG_HPSC_MACB
+		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));	
+#else
 		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(44));
+#endif
 		bp->hw_dma_cap |= HW_DMA_CAP_64B;
 	}
 #endif
