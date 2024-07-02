@@ -87,32 +87,30 @@ tmp3	.req	r6
 
 	.endm
 
-/**
- * Set state for 2.5V low power regulator
- * @ena: 0 - disable regulator
- *	 1 - enable regulator
+/*
+ * Set LPM
+ * @ena: 0 - disable LPM
+ *	 1 - enable LPM
  *
- * Side effects: overwrites r7, r8, r9, r10
+ * Side effects: overwrites r7, r8, r9
  */
-	.macro at91_2_5V_reg_set_low_power ena
+	.macro at91_set_lpm ena
 #ifdef CONFIG_SOC_SAMA7
-	ldr	r7, .sfrbu
-	mov	r8, #\ena
-	ldr	r9, [r7, #AT91_SFRBU_25LDOCR]
-	orr	r9, r9, #AT91_SFRBU_25LDOCR_LP
-	cmp	r8, #1
-	beq	lp_done_\ena
-	bic	r9, r9, #AT91_SFRBU_25LDOCR_LP
-lp_done_\ena:
-	ldr	r10, =AT91_SFRBU_25LDOCR_LDOANAKEY
-	orr	r9, r9, r10
-	str	r9, [r7, #AT91_SFRBU_25LDOCR]
-#endif
-	.endm
-
-	.macro at91_backup_set_lpm reg
-#ifdef CONFIG_SOC_SAMA7
-	orr	\reg, \reg, #0x200000
+	ldr	r7, .lpm
+	cmp	r7, #1
+	bne	21f
+	ldr	r7, .shdwc
+	cmp	r7, #0
+	beq	21f
+	mov	r8, #0xA5000000
+	add	r8, #0x200000
+	mov	r9, #\ena
+	cmp	r9, #1
+	beq	20f
+	add	r8, #0x200000
+20:
+	str	r8, [r7]
+21:
 #endif
 	.endm
 
@@ -502,7 +500,7 @@ sr_dis_exit:
 	ldr	tmp1, [pmc, #AT91_PMC_SR]
 	str	tmp1, .saved_osc_status
 	tst	tmp1, #AT91_PMC_MOSCRCS
-	bne	1f
+	bne	7f
 
 	/* Turn off RC oscillator */
 	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
@@ -515,6 +513,9 @@ sr_dis_exit:
 2:	ldr	tmp1, [pmc, #AT91_PMC_SR]
 	tst	tmp1, #AT91_PMC_MOSCRCS
 	bne	2b
+
+	/* Enable LPM. */
+7:	at91_set_lpm 1
 
 	/* Wait for interrupt */
 1:	at91_cpu_idle
@@ -533,8 +534,10 @@ sr_dis_exit:
 	wait_mckrdy tmp3
 	b	6f
 
-5:	/* Restore RC oscillator state */
-	ldr	tmp1, .saved_osc_status
+5:	at91_set_lpm 0
+
+	/* Restore RC oscillator state */
+8:	ldr	tmp1, .saved_osc_status
 	tst	tmp1, #AT91_PMC_MOSCRCS
 	beq	4f
 
@@ -611,6 +614,9 @@ sr_dis_exit:
 
 	wait_mckrdy tmp3
 
+	/* Enable LPM */
+	at91_set_lpm 1
+
 	/* Enter the ULP1 mode by set WAITMODE bit in CKGR_MOR */
 	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
 	orr	tmp1, tmp1, #AT91_PMC_WAITMODE
@@ -623,6 +629,9 @@ sr_dis_exit:
 	nop
 
 	wait_mckrdy tmp3
+
+	/* Disable LPM. */
+	at91_set_lpm 0
 
 	/* Enable the crystal oscillator */
 	ldr	tmp1, [pmc, #AT91_CKGR_MOR]
@@ -954,9 +963,6 @@ save_mck:
 
 	at91_plla_disable
 
-	/* Enable low power mode for 2.5V regulator. */
-	at91_2_5V_reg_set_low_power 1
-
 	ldr	tmp3, .pm_mode
 	cmp	tmp3, #AT91_PM_ULP1
 	beq	ulp1_mode
@@ -969,9 +975,6 @@ ulp1_mode:
 	b	ulp_exit
 
 ulp_exit:
-	/* Disable low power mode for 2.5V regulator. */
-	at91_2_5V_reg_set_low_power 0
-
 	ldr	pmc, .pmc_base
 
 	at91_plla_enable
@@ -1014,7 +1017,9 @@ ulp_exit:
 	ldr	r0, .shdwc
 	mov	tmp1, #0xA5000000
 	add	tmp1, tmp1, #0x1
-	at91_backup_set_lpm tmp1
+#ifdef CONFIG_SOC_SAMA7
+	orr	tmp1, tmp1, #0x200000
+#endif
 	str	tmp1, [r0, #0]
 .endm
 
@@ -1045,6 +1050,10 @@ ENTRY(at91_pm_suspend_in_sram)
 	str	tmp1, .memtype
 	ldr	tmp1, [r0, #PM_DATA_MODE]
 	str	tmp1, .pm_mode
+#ifdef CONFIG_SOC_SAMA7
+	ldr	tmp1, [r0, #PM_DATA_LPM]
+	str	tmp1, .lpm
+#endif
 
 	/*
 	 * ldrne below are here to preload their address in the TLB as access
@@ -1132,6 +1141,10 @@ ENDPROC(at91_pm_suspend_in_sram)
 	.word 0
 .pmc_version:
 	.word 0
+#ifdef CONFIG_SOC_SAMA7
+.lpm:
+	.word 0
+#endif
 .saved_mckr:
 	.word 0
 .saved_pllar:

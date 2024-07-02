@@ -283,6 +283,7 @@ static int mchp_coreqspi_setup_clock(struct mchp_coreqspi *qspi, struct spi_devi
 	}
 
 	control = readl_relaxed(qspi->regs + REG_CONTROL);
+	control &= ~CONTROL_CLKRATE_MASK;
 	control |= baud_rate_val << CONTROL_CLKRATE_SHIFT;
 	writel_relaxed(control, qspi->regs + REG_CONTROL);
 	control = readl_relaxed(qspi->regs + REG_CONTROL);
@@ -579,6 +580,7 @@ static void mchp_coreqspi_remove(struct platform_device *pdev)
 
 static const struct of_device_id mchp_coreqspi_of_match[] = {
 	{ .compatible = "microchip,coreqspi-rtl-v2" },
+	{ .compatible = "microchip,mpfs-qspi" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mchp_coreqspi_of_match);

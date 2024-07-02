@@ -188,4 +188,10 @@ config UIO_MESA
     help
       Enable kernel module support for Application Complex Microchip UIO MESA driver
 
+config UIO_MICROCHIP_DMA
+	tristate "Generic driver for Microchip Fabric DMA controller"
+	depends on UIO
+	help
+	  Userspace I/O interface for the Microchip Fabric DMA controller.
+	  If compiled as a module, it will be called uio-microchip-dma.
 endif
