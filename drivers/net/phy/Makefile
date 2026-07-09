@@ -4,7 +4,7 @@
 libphy-y			:= phy.o phy-c45.o phy-core.o phy_device.o \
 				   linkmode.o phy_link_topology.o
 mdio-bus-y			+= mdio_bus.o mdio_device.o
-
+mdio-bus-y                      += mdio-p64h.o
 ifdef CONFIG_MDIO_DEVICE
 obj-y				+= mdio-boardinfo.o
 endif
