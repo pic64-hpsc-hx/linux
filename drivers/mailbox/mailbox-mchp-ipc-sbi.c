@@ -36,9 +36,23 @@ enum {
 	SBI_EXT_IPC_STATUS,
 };
 
-enum ipc_hw {
-	MIV_IHC,
+struct mchp_ipc_sbi_chan {
+	void *buf_base_tx;
+	void *buf_base_rx;
+	void *msg_buf_tx;
+	void *msg_buf_rx;
+	phys_addr_t buf_base_tx_addr;
+	phys_addr_t buf_base_rx_addr;
+	phys_addr_t msg_buf_tx_addr;
+	phys_addr_t msg_buf_rx_addr;
+	int chan_aggregated_irq;
+	int mp_irq;
+	int mc_irq;
+	u32 id;
+	u32 max_msg_size;
 };
+
+static LIST_HEAD(ipc_devices_list);
 
 /**
  * struct mchp_ipc_mbox_info - IPC probe message format
@@ -99,19 +113,10 @@ struct mchp_ipc_sbi_msg {
 };
 
 struct mchp_ipc_cluster_cfg {
+
 	void *buf_base;
 	phys_addr_t buf_base_addr;
 	int irq;
-};
-
-struct mchp_ipc_sbi_mbox {
-	struct device *dev;
-	struct mbox_chan *chans;
-	struct mchp_ipc_cluster_cfg *cluster_cfg;
-	void *buf_base;
-	unsigned long buf_base_addr;
-	struct mbox_controller controller;
-	enum ipc_hw hw_type;
 };
 
 static int mchp_ipc_sbi_chan_send(u32 command, u32 channel, unsigned long address)
@@ -163,7 +168,70 @@ static inline void mchp_ipc_process_received_data(struct mbox_chan *chan,
 
 	memcpy(&sbi_msg, chan_info->buf_base_rx, sizeof(struct mchp_ipc_sbi_msg));
 	ipc_msg->buf = (u32 *)chan_info->msg_buf_rx;
-	ipc_msg->size = sbi_msg.size;
+	ipc_msg->size = ((struct mchp_ipc_sbi_msg *)chan_info->buf_base_rx)->size;
+}
+
+static irqreturn_t mchp_p64h_ipc_isr(int irq, void *data)
+{
+	struct mbox_chan *chan;
+	struct mchp_ipc_sbi_chan *chan_info;
+	struct mchp_ipc_sbi_mbox *ipc = (struct mchp_ipc_sbi_mbox *)data;
+	struct mchp_ipc_msg ipc_msg;
+	struct mchp_ipc_status status_msg;
+	int ret;
+	unsigned long hartid;
+	u32 i, chan_id;;
+
+	/* Find out the hart that originated the irq */
+	for_each_online_cpu(i) {
+		hartid = cpuid_to_hartid_map(i);
+		if (irq == ipc->cluster_cfg[hartid].irq)
+			break;
+	}
+
+	status_msg.cluster = hartid;
+	memcpy(ipc->cluster_cfg[hartid].buf_base, &status_msg, sizeof(struct mchp_ipc_status));
+
+	ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_STATUS, ipc->id, ipc->cluster_cfg[hartid].buf_base_addr);
+	if (ret < 0) {
+		dev_err_ratelimited(ipc->dev, "could not get IHC irq status ret=%d\n", ret);
+		return IRQ_HANDLED;
+	}
+
+	memcpy(&status_msg, ipc->cluster_cfg[hartid].buf_base, sizeof(struct mchp_ipc_status));
+
+	/*
+	 * Iterate over each bit set in the IHC interrupt status register (IRQ_STATUS) to identify
+	 * the channel(s) that have a message to be processed/acknowledged.
+	 * The bits are organized in alternating format, where each pair of bits represents
+	 * the status of the message present and message clear interrupts for each cluster/hart
+	 * (from hart 0 to hart 5). Each cluster can have up to 5 fixed channels associated.
+	 */
+
+	for_each_set_bit(i, (unsigned long *)&status_msg.status, IRQ_STATUS_BITS) {
+		/* Find out the destination hart that triggered the interrupt */
+		chan_id = ipc->id;
+		chan = &ipc->chans[ipc->id];
+
+		chan_info = (struct mchp_ipc_sbi_chan *)chan->con_priv;
+
+		if (i % 2 == 0) {
+			mchp_ipc_prepare_receive_req(chan);
+			ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_RECEIVE, chan_id,
+						     chan_info->buf_base_rx_addr);
+			if (ret < 0)
+				continue;
+
+			mchp_ipc_process_received_data(chan, &ipc_msg);
+			mbox_chan_received_data(&ipc->chans[chan_id], (void *)&ipc_msg);
+
+		} else {
+			ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_RECEIVE, chan_id,
+						     chan_info->buf_base_rx_addr);
+			mbox_chan_txdone(&ipc->chans[chan_id], ret);
+		}
+	}
+	return IRQ_HANDLED;
 }
 
 static irqreturn_t mchp_ipc_cluster_aggr_isr(int irq, void *data)
@@ -248,7 +316,6 @@ static int mchp_ipc_send_data(struct mbox_chan *chan, void *data)
 	struct mchp_ipc_sbi_chan *chan_info = (struct mchp_ipc_sbi_chan *)chan->con_priv;
 	const struct mchp_ipc_msg *msg = data;
 	struct mchp_ipc_sbi_msg sbi_payload;
-
 	memcpy(chan_info->msg_buf_tx, msg->buf, msg->size);
 	sbi_payload.buf_addr = chan_info->msg_buf_tx_addr;
 	sbi_payload.size = msg->size;
@@ -370,6 +437,44 @@ static struct mbox_chan *mchp_ipc_mbox_xlate(struct mbox_controller *controller,
 	return &ipc->chans[chan_id];
 }
 
+static int p64h_irq_get(struct mchp_ipc_sbi_mbox *ipc) {
+	struct platform_device *pdev = to_platform_device(ipc->dev);
+	int ret = 0;
+	int irq;
+	unsigned long hartid;
+	u32 i;
+
+	/* Register the interrupt */
+	irq = platform_get_irq(pdev, 0);
+	if (irq >= 0) {
+		ret = devm_request_irq(ipc->dev, irq, mchp_p64h_ipc_isr, 0,
+				       pdev->name, ipc);
+		if (ret) {
+			dev_err(ipc->dev,
+				"cannot register interrupt handler err=%d\n",
+				ret);
+			return 0;
+		}
+		else {
+			for_each_online_cpu(i) {
+				hartid = cpuid_to_hartid_map(i);
+				printk("adding interrupt to hart %d-%d\n", hartid, i);
+				ipc->cluster_cfg[hartid].buf_base = devm_kmalloc(ipc->dev,
+								sizeof(struct mchp_ipc_status),
+								GFP_KERNEL);
+
+				if (!ipc->cluster_cfg[hartid].buf_base)
+					return 0;
+
+				ipc->cluster_cfg[hartid].buf_base_addr = __pa(ipc->cluster_cfg[hartid].buf_base);
+				ipc->cluster_cfg[hartid].irq = irq;
+				ret = 1;
+			}
+		}
+	}
+	return ret;
+}
+
 static int mchp_ipc_get_cluster_aggr_irq(struct mchp_ipc_sbi_mbox *ipc)
 {
 	struct platform_device *pdev = to_platform_device(ipc->dev);
@@ -405,6 +510,32 @@ static int mchp_ipc_get_cluster_aggr_irq(struct mchp_ipc_sbi_mbox *ipc)
 	}
 
 	return irq_found;
+}
+
+/**
+  * p64h_ipc_device_add - Add a device in the P64H UIO device list
+  * @data: pointer to private device data
+  *
+  * @return 0 on success, otherwise non-zero error code
+  */
+
+/* P64H id allocator */
+static DEFINE_IDA(mchp_p64h_ida);
+static int mchp_ipc_add(struct platform_device *pdev, struct mchp_ipc_sbi_mbox *data)
+{
+	int ret = 0;
+
+	INIT_LIST_HEAD(&data->list);
+	ret = ida_alloc(&mchp_p64h_ida, GFP_KERNEL);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "failed to allocate ipc device id\n");
+		return ret;
+	}
+	data->id = ret;
+
+	list_add_tail(&data->list, &ipc_devices_list);
+	printk("One element added in mchp ipc list");
+	return 0;
 }
 
 static int mchp_ipc_probe(struct platform_device *pdev)
@@ -446,6 +577,7 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ipc->dev = dev;
+	ipc->pdev = pdev;
 	ipc->controller.txdone_irq = true;
 	ipc->controller.dev = ipc->dev;
 	ipc->controller.ops = &mchp_ipc_ops;
@@ -471,6 +603,17 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 		if (mchp_ipc_get_cluster_aggr_irq(ipc))
 			irq_avail = true;
 	}
+	else if (ipc->hw_type == P64H_IPC) {
+		ipc->cluster_cfg = devm_kcalloc(dev, num_online_cpus(),
+						sizeof(struct mchp_ipc_cluster_cfg),
+						GFP_KERNEL);
+		if (!ipc->cluster_cfg)
+			return -ENOMEM;
+
+		if (p64h_irq_get(ipc))
+			irq_avail = true;
+
+	}
 
 	if (!irq_avail)
 		return dev_err_probe(dev, -ENODEV, "missing interrupt property\n");
@@ -480,11 +623,18 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				    "Inter-Processor communication (IPC) registration failed\n");
 
+	mchp_ipc_add(pdev, ipc);
 	return 0;
 }
 
+const struct list_head *mchp_ipc_device_list_get(void){
+	return &ipc_devices_list;
+}
+EXPORT_SYMBOL(mchp_ipc_device_list_get);
+
 static const struct of_device_id mchp_ipc_of_match[] = {
-	{.compatible = "microchip,sbi-ipc", },
+	{.compatible = "microchip,sbi-ipc",},
+	{.compatible = "microchip,p64h-ipc",},
 	{}
 };
 MODULE_DEVICE_TABLE(of, mchp_ipc_of_match);
