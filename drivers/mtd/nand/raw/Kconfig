@@ -405,6 +405,12 @@ config MTD_NAND_CADENCE
 	  Enable the driver for NAND flash on platforms using a Cadence NAND
 	  controller.
 
+config MTD_NAND_P64H
+    tristate "P64H NAND controller support"
+	#depends on OF && HAS_IOMEM
+    help
+      Enable support for the P64H NAND controller.
+
 config MTD_NAND_ARASAN
 	tristate "Support for Arasan NAND flash controller"
 	depends on HAS_IOMEM && HAS_DMA
