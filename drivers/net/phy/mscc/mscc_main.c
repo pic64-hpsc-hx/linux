@@ -2202,6 +2202,138 @@ static int vsc85xx_read_status(struct phy_device *phydev)
 	return genphy_read_status(phydev);
 }
 
+/* bus->mdio_lock should be locked when using this function */
+static int p64h_vsc8574_config_pre_init(struct phy_device *phydev)
+{
+        struct device *dev = &phydev->mdio.dev;
+        int ret = 0;
+        int timeout = 10;
+        u16 reg;
+
+        phy_base_write(phydev, MSCC_EXT_PAGE_ACCESS,
+                       MSCC_PHY_PAGE_EXTENDED_GPIO);
+
+        reg = phy_base_read(phydev, MSCC_EXT_PAGE_ACCESS);
+
+        reg = phy_base_read(phydev, 18);
+        if (reg&0xf0)
+                return 0;
+
+	phy_base_write(phydev, 18, 0x80F0);
+
+        while (timeout){
+                reg = phy_base_read(phydev, 18);
+                if (0xF0U == reg)
+                        break;
+
+                /* 10 mSec */
+                usleep_range(10000, 20000);
+                timeout --;
+        }
+
+        if (!timeout){
+                ret = -ETIMEDOUT;
+                dev_err(dev, "Polling of reg 18 - general purpose register failed\n");
+        }
+
+        return ret;
+}
+
+static int p64h_genphy_soft_reset(struct phy_device *phydev)
+{
+
+        int rc;
+        struct device *dev = &phydev->mdio.dev;
+        u16 reg;
+        u32 timeout = 100;
+
+        phy_lock_mdio_bus(phydev);
+
+        rc = phy_base_write(phydev, MSCC_EXT_PAGE_ACCESS,
+                             MSCC_PHY_PAGE_STANDARD);
+        if (rc < 0)
+                goto release_mdio_lock;
+
+        reg = phy_base_read(phydev, 0) | (u16)MICRO_NSOFT_RESET;
+
+        rc = phy_base_write(phydev, 0,
+                             reg);
+        if (rc < 0){
+                dev_err(dev, "%s: cannot set PHY reg %d error: %d\n",
+                        __func__, 0x0, rc);
+                goto release_mdio_lock;
+        }
+
+        reg = phy_base_read(phydev, 0);
+        while (timeout){
+                reg = phy_base_read(phydev, 0);
+
+                if (((reg>>15)&0x1) == 0x0)
+                        break;
+                /* 10 mSec */
+                usleep_range(10000, 20000);
+                timeout --;
+        }
+
+        if (!timeout) {
+                rc = -ETIMEDOUT;
+                dev_err(&phydev->mdio.dev, "%s: Timeout (reg 0(gp) = 0x%x)/0x%x\n",
+                        __func__, reg, ((reg>>15)&0x1));
+        }
+release_mdio_lock:
+        phy_unlock_mdio_bus(phydev);
+        return rc;
+}
+
+static int p64h_vsc8584_config_init(struct phy_device *phydev)
+{
+        int ret;
+
+        phydev->mdix_ctrl = ETH_TP_MDI_AUTO;
+
+        phy_lock_mdio_bus(phydev);
+
+        //if (phy_package_init_once(phydev)) {
+        if(1){
+                WARN_ON(phydev->drv->phy_id_mask & 0xf);
+                ret = p64h_vsc8574_config_pre_init(phydev);
+                if (ret < 0){
+                        dev_err(&phydev->mdio.dev, "%s: cannot set PHY reg %d error: %d\n",
+                        __func__, 0x18, ret);
+                        goto release_mdio_lock;
+                }
+        }
+        phy_unlock_mdio_bus(phydev);
+        ret = p64h_genphy_soft_reset(phydev);
+        return ret;
+release_mdio_lock:
+        phy_unlock_mdio_bus(phydev);
+        return ret;
+}
+
+static int p64h_vsc85xx_config_aneg(struct phy_device *phydev)
+{
+        int rc;
+
+        rc = phy_modify_paged(phydev, MSCC_PHY_PAGE_EXTENDED_3,
+                              16, GENMASK(7, 7),
+                              GENMASK(7, 7));
+        if (rc < 0)
+                goto out;
+
+        rc = phy_modify_paged(phydev, MSCC_PHY_PAGE_STANDARD,
+                              0, GENMASK(15, 15),
+                              GENMASK(15, 15));
+        if (rc < 0)
+                goto out;
+if (0)
+        rc = p64h_genphy_soft_reset(phydev);
+out:
+        return rc;
+
+}
+
+
 static int vsc8514_probe(struct phy_device *phydev)
 {
 	struct vsc8531_private *vsc8531;
@@ -2581,8 +2713,8 @@ static struct phy_driver vsc85xx_driver[] = {
 	.phy_id_mask	= 0xfffffff0,
 	/* PHY_GBIT_FEATURES */
 	.soft_reset	= &genphy_soft_reset,
-	.config_init    = &vsc8584_config_init,
-	.config_aneg    = &vsc85xx_config_aneg,
+	.config_init    = &p64h_vsc8584_config_init,//&vsc8584_config_init,
+	.config_aneg    = &p64h_vsc85xx_config_aneg,//&vsc85xx_config_aneg,
 	.aneg_done	= &genphy_aneg_done,
 	.read_status	= &vsc85xx_read_status,
 	.handle_interrupt = &vsc8584_handle_interrupt,
@@ -2605,9 +2737,9 @@ static struct phy_driver vsc85xx_driver[] = {
 	.name		= "Microsemi GE VSC8574 SyncE",
 	.phy_id_mask	= 0xfffffff0,
 	/* PHY_GBIT_FEATURES */
-	.soft_reset	= &genphy_soft_reset,
-	.config_init    = &vsc8584_config_init,
-	.config_aneg    = &vsc85xx_config_aneg,
+        .soft_reset     = &p64h_genphy_soft_reset,
+        .config_init    = &p64h_vsc8584_config_init,
+        .config_aneg    = &p64h_vsc85xx_config_aneg,
 	.aneg_done	= &genphy_aneg_done,
 	.read_status	= &vsc85xx_read_status,
 	.handle_interrupt = vsc85xx_handle_interrupt,
