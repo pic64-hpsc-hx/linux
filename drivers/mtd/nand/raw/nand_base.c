@@ -5183,9 +5183,6 @@ static void rawnand_check_data_only_read_support(struct nand_chip *chip)
 
 static void rawnand_early_check_supported_ops(struct nand_chip *chip)
 {
-	/* The supported_op fields should not be set by individual drivers */
-	WARN_ON_ONCE(chip->controller->supported_op.data_only_read);
-
 	if (!nand_has_exec_op(chip))
 		return;
 
