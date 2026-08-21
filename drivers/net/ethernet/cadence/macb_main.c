@@ -5519,7 +5519,8 @@ static const struct macb_config raspberrypi_rp1_config = {
 
 static const struct macb_config pic64hpsc_config = {
 	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE | MACB_CAPS_JUMBO |
-		MACB_CAPS_GEM_HAS_PTP | MACB_CAPS_USRIO_DISABLED,
+		MACB_CAPS_GEM_HAS_PTP | MACB_CAPS_USRIO_DISABLED |
+		MACB_CAPS_QBV,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
 	.init = init_reset_optional,
