@@ -10,7 +10,7 @@
 #include <linux/types.h>
 #include <linux/mailbox_client.h>
 
-#define MAX_MSG_SIZE 128
+#define MAX_MSG_SIZE 64
 
 struct mchp_ipc_msg {
 	u32 *buf;
