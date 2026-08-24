@@ -5546,6 +5546,7 @@ static const struct of_device_id macb_dt_ids[] = {
 	{ .compatible = "sifive,fu540-c000-gem", .data = &fu540_c000_config },
 	{ .compatible = "microchip,mpfs-macb", .data = &mpfs_config },
 	{ .compatible = "microchip,pic64hpsc-gem", .data = &pic64hpsc_config},
+	{ .compatible = "microchip,p64h-gem", .data = &pic64hpsc_config}, /* deprecated */
 	{ .compatible = "microchip,sam9x7-gem", .data = &sam9x7_gem_config },
 	{ .compatible = "microchip,sama7g5-gem", .data = &sama7g5_gem_config },
 	{ .compatible = "microchip,sama7g5-emac", .data = &sama7g5_emac_config },
