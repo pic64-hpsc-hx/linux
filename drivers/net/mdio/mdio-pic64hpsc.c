@@ -172,6 +172,7 @@ static int pic64hpsc_mdio_probe(struct platform_device *pdev)
 
 static const struct of_device_id pic64hpsc_mdio_match[] = {
 	{ .compatible = "microchip,pic64hpsc-mdio" },
+	{ .compatible = "microchip,p64h-mdio" }, /* deprecated */
 	{}
 };
 MODULE_DEVICE_TABLE(of, pic64hpsc_mdio_match);
