@@ -209,9 +209,18 @@ static irqreturn_t mchp_p64h_ipc_isr(int irq, void *data)
 	 */
 
 	for_each_set_bit(i, (unsigned long *)&status_msg.status, IRQ_STATUS_BITS) {
-		/* Find out the destination hart that triggered the interrupt */
-		chan_id = ipc->id;
-		chan = &ipc->chans[ipc->id];
+		/*
+		 * The status word packs two bits per channel: bit 2*c is the
+		 * "message present" (RX) interrupt for channel c and bit 2*c+1
+		 * is the "message clear" (TX-done) interrupt. Derive the
+		 * channel from the bit position instead of using the controller
+		 * id, which is not a channel index and only happened to work
+		 * for channel 0.
+		 */
+		chan_id = i / 2;
+		if (chan_id >= ipc->controller.num_chans)
+			continue;
+		chan = &ipc->chans[chan_id];
 
 		chan_info = (struct mchp_ipc_sbi_chan *)chan->con_priv;
 
