@@ -396,8 +396,10 @@ static int mchp_ipc_startup(struct mbox_chan *chan)
 
 	switch (ipc->hw_type) {
 	case MIV_IHC:
+	case P64H_IPC:
 		return 0;
 	default:
+		ret = -ENODEV;
 		goto fail_free_buf_msg_rx;
 	}
 
