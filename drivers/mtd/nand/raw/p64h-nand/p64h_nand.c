@@ -755,7 +755,7 @@ static void cadence_nand_reset_irq(struct cdns_nand_ctrl *cdns_ctrl)
 	memset(&cdns_ctrl->irq_status, 0, sizeof(cdns_ctrl->irq_status));
 	memset(&cdns_ctrl->irq_mask, 0, sizeof(cdns_ctrl->irq_mask));
 	writel_relaxed(NVM_SS_INT_CLEAR_VAL, cdns_ctrl->nvm_ctrl_i_reg);
-
+	reinit_completion(&cdns_ctrl->complete);
 	spin_unlock_irqrestore(&cdns_ctrl->irq_lock, flags);
 }
 
@@ -810,15 +810,14 @@ cadence_nand_wait_for_irq(struct cdns_nand_ctrl *cdns_ctrl,
 {
 	unsigned long timeout = msecs_to_jiffies(10000);
 	unsigned long time_left;
+	unsigned long flags;
 
 	time_left = wait_for_completion_timeout(&cdns_ctrl->complete, timeout);
 
+	spin_lock_irqsave(&cdns_ctrl->irq_lock, flags);
 	*irq_status = cdns_ctrl->irq_status;
-	//time_left = wait_for_completion_timeout(&cdns_ctrl->complete, timeout);
-	//if (!*irq_status)
-	//	 time_left = wait_for_completion_timeout(&cdns_ctrl->complete, timeout);
-	//*irq_status = cdns_ctrl->irq_status;
-	//
+	spin_unlock_irqrestore(&cdns_ctrl->irq_lock, flags);
+
 	if (time_left == 0) {
 		/* Timeout error. */
 		dev_err(cdns_ctrl->dev, "timeout occurred:\n");
@@ -1025,7 +1024,6 @@ static int cadence_nand_cdma_send(struct cdns_nand_ctrl *cdns_ctrl, u8 thread)
 		return status;
 
 	cadence_nand_reset_irq(cdns_ctrl);
-	reinit_completion(&cdns_ctrl->complete);
 
 	writel_relaxed((u32)cdns_ctrl->dma_cdma_desc,
 		       cdns_ctrl->reg + CMD_REG2);
@@ -1198,8 +1196,14 @@ static int cadence_nand_hw_init(struct cdns_nand_ctrl *cdns_ctrl)
 	writel_relaxed(0, cdns_ctrl->reg + MULTIPLANE_CFG);
 	writel_relaxed(0, cdns_ctrl->reg + CACHE_CFG);
 
-	/* Clear all interrupts. */
+	/*
+	 * Mask and clear all interrupts before the handler is installed.
+	 * The bootloader uses this controller and may leave both controller
+	 * and NVM subsystem interrupts asserted.
+	 */
+	writel_relaxed(0, cdns_ctrl->reg + INTR_ENABLE);
 	writel_relaxed(0xFFFFFFFF, cdns_ctrl->reg + INTR_STATUS);
+	writel_relaxed(NVM_SS_INT_CLEAR_VAL, cdns_ctrl->nvm_ctrl_i_reg);
 
 	cadence_nand_get_caps(cdns_ctrl);
 	if (cadence_nand_read_bch_caps(cdns_ctrl))
@@ -2865,6 +2869,13 @@ static int cadence_nand_init(struct cdns_nand_ctrl *cdns_ctrl)
 		goto free_buf_desc;
 	}
 
+	spin_lock_init(&cdns_ctrl->irq_lock);
+	init_completion(&cdns_ctrl->complete);
+
+	ret = cadence_nand_hw_init(cdns_ctrl);
+	if (ret)
+		goto disable_irq;
+
 	if (devm_request_irq(cdns_ctrl->dev, cdns_ctrl->irq, cadence_nand_isr,
 			     IRQF_SHARED, "cadence-nand-controller",
 			     cdns_ctrl)) {
@@ -2872,13 +2883,6 @@ static int cadence_nand_init(struct cdns_nand_ctrl *cdns_ctrl)
 		ret = -ENODEV;
 		goto free_buf;
 	}
-
-	spin_lock_init(&cdns_ctrl->irq_lock);
-	init_completion(&cdns_ctrl->complete);
-
-	ret = cadence_nand_hw_init(cdns_ctrl);
-	if (ret)
-		goto disable_irq;
 
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_MEMCPY, mask);
