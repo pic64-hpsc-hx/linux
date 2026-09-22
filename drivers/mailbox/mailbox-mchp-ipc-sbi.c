@@ -23,6 +23,22 @@
 #include <asm/vendorid_list.h>
 
 #define IRQ_STATUS_BITS			12
+/*
+ * Events reported by the SBI implementation in the irq_type field of
+ * struct mchp_ipc_sbi_rx_msg after a SBI_EXT_IPC_RECEIVE call.
+ */
+#define IPC_OPS_NOT_SUPPORTED		BIT(0)
+#define IPC_MP_IRQ			BIT(1)
+#define IPC_MC_IRQ			BIT(2)
+/*
+ * The P64H IPC multiplexes the message present (rx) and the message cleared
+ * (tx done) interrupt of a channel onto a single line, and the hardware does
+ * not signal the CPU again while one of them is still active. An event that
+ * arrives while the handler is running is therefore lost for good unless the
+ * handler keeps draining until nothing is pending anymore. The cap only bounds
+ * the loop in case the events never stop coming.
+ */
+#define P64H_IPC_MAX_IRQ_PASSES		16
 #define NUM_CHANS_PER_CLUSTER		5
 #define IPC_DMA_BIT_MASK		32
 #define SBI_EXT_MICROCHIP_TECHNOLOGY	(SBI_EXT_VENDOR_START | \
@@ -112,6 +128,21 @@ struct mchp_ipc_sbi_msg {
 	u8 irq_type;
 };
 
+/**
+ * struct mchp_ipc_sbi_rx_msg - IPC SBI receive payload message
+ *
+ * @msg:	IPC SBI message describing the buffer the data was copied to
+ * @irq_type:	mask of the events the SBI_EXT_IPC_RECEIVE call has consumed
+ *
+ * Layout of the buffer the SBI implementation writes back on a
+ * SBI_EXT_IPC_RECEIVE call. It appends the event mask after the message, so the
+ * buffer handed to it has to be large enough to hold this structure.
+ */
+struct mchp_ipc_sbi_rx_msg {
+	struct mchp_ipc_sbi_msg msg;
+	u8 irq_type;
+};
+
 struct mchp_ipc_cluster_cfg {
 
 	void *buf_base;
@@ -177,69 +208,69 @@ static irqreturn_t mchp_p64h_ipc_isr(int irq, void *data)
 	struct mchp_ipc_sbi_chan *chan_info;
 	struct mchp_ipc_sbi_mbox *ipc = (struct mchp_ipc_sbi_mbox *)data;
 	struct mchp_ipc_msg ipc_msg;
-	struct mchp_ipc_status status_msg;
+	unsigned int pass;
+	u8 irq_type;
 	int ret;
-	unsigned long hartid;
-	u32 i, chan_id;;
-
-	/* Find out the hart that originated the irq */
-	for_each_online_cpu(i) {
-		hartid = cpuid_to_hartid_map(i);
-		if (irq == ipc->cluster_cfg[hartid].irq)
-			break;
-	}
-
-	status_msg.cluster = hartid;
-	memcpy(ipc->cluster_cfg[hartid].buf_base, &status_msg, sizeof(struct mchp_ipc_status));
-
-	ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_STATUS, ipc->id, ipc->cluster_cfg[hartid].buf_base_addr);
-	if (ret < 0) {
-		dev_err_ratelimited(ipc->dev, "could not get IHC irq status ret=%d\n", ret);
-		return IRQ_HANDLED;
-	}
-
-	memcpy(&status_msg, ipc->cluster_cfg[hartid].buf_base, sizeof(struct mchp_ipc_status));
 
 	/*
-	 * Iterate over each bit set in the IHC interrupt status register (IRQ_STATUS) to identify
-	 * the channel(s) that have a message to be processed/acknowledged.
-	 * The bits are organized in alternating format, where each pair of bits represents
-	 * the status of the message present and message clear interrupts for each cluster/hart
-	 * (from hart 0 to hart 5). Each cluster can have up to 5 fixed channels associated.
+	 * On P64H each IPC channel is a separate device with its own interrupt,
+	 * so the channel that raised the irq is the one this device owns. Its
+	 * index is the "chan-id" read at probe time, which is also the id the
+	 * SBI implementation uses to look up the channel.
 	 */
+	if (ipc->chan_id >= ipc->controller.num_chans)
+		return IRQ_NONE;
 
-	for_each_set_bit(i, (unsigned long *)&status_msg.status, IRQ_STATUS_BITS) {
-		/*
-		 * The status word packs two bits per channel: bit 2*c is the
-		 * "message present" (RX) interrupt for channel c and bit 2*c+1
-		 * is the "message clear" (TX-done) interrupt. Derive the
-		 * channel from the bit position instead of using the controller
-		 * id, which is not a channel index and only happened to work
-		 * for channel 0.
-		 */
-		chan_id = i / 2;
-		if (chan_id >= ipc->controller.num_chans)
-			continue;
-		chan = &ipc->chans[chan_id];
+	chan = &ipc->chans[ipc->chan_id];
+	chan_info = (struct mchp_ipc_sbi_chan *)chan->con_priv;
 
-		chan_info = (struct mchp_ipc_sbi_chan *)chan->con_priv;
+	/*
+	 * Nothing has requested this channel yet, so its buffers do not exist.
+	 * Acking the interrupt would mean handing the SBI implementation stale
+	 * pointers, so just report it as unhandled.
+	 */
+	if (!chan_info || !chan_info->buf_base_rx)
+		return IRQ_NONE;
 
-		if (i % 2 == 0) {
-			mchp_ipc_prepare_receive_req(chan);
-			ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_RECEIVE, chan_id,
-						     chan_info->buf_base_rx_addr);
-			if (ret < 0)
-				continue;
+	/*
+	 * A single SBI_EXT_IPC_RECEIVE call services both the message present
+	 * and the message cleared event of the channel and reports back which
+	 * of them it has consumed, so keep calling it until it reports none
+	 * left. Deciding what to do from what the call consumed, rather than
+	 * from a status read taken beforehand, is what makes it safe for an
+	 * event to arrive while the handler is running.
+	 */
+	for (pass = 0; pass < P64H_IPC_MAX_IRQ_PASSES; pass++) {
+		mchp_ipc_prepare_receive_req(chan);
 
+		ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_RECEIVE, ipc->chan_id,
+					     chan_info->buf_base_rx_addr);
+		if (ret < 0) {
+			dev_err_ratelimited(ipc->dev, "channel %u receive failed ret=%d\n",
+					    ipc->chan_id, ret);
+			break;
+		}
+
+		irq_type = ((struct mchp_ipc_sbi_rx_msg *)chan_info->buf_base_rx)->irq_type;
+		if (!(irq_type & (IPC_MP_IRQ | IPC_MC_IRQ)))
+			break;
+
+		if (irq_type & IPC_MP_IRQ) {
 			mchp_ipc_process_received_data(chan, &ipc_msg);
-			mbox_chan_received_data(&ipc->chans[chan_id], (void *)&ipc_msg);
+			if (chan->cl)
+				mbox_chan_received_data(chan, (void *)&ipc_msg);
+		}
 
-		} else {
-			ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_RECEIVE, chan_id,
-						     chan_info->buf_base_rx_addr);
-			mbox_chan_txdone(&ipc->chans[chan_id], ret);
+		if (irq_type & IPC_MC_IRQ) {
+			if (chan->cl)
+				mbox_chan_txdone(chan, 0);
 		}
 	}
+
+	if (pass == P64H_IPC_MAX_IRQ_PASSES)
+		dev_warn_ratelimited(ipc->dev, "channel %u irq events not draining\n",
+				     ipc->chan_id);
+
 	return IRQ_HANDLED;
 }
 
@@ -348,9 +379,12 @@ static int mchp_ipc_startup(struct mbox_chan *chan)
 	 * The TX base buffer is used to transmit two types of messages:
 	 * - struct mchp_ipc_init to initialize the channel
 	 * - struct mchp_ipc_sbi_msg to transmit user data/payload
-	 * Ensure the TX buffer size is large enough to accommodate either message type.
+	 * The RX base buffer receives a struct mchp_ipc_sbi_rx_msg, which is
+	 * the largest of the three. Ensure both buffers are large enough to
+	 * accommodate any of these message types.
 	 */
-	size_t max_size = max(sizeof(struct mchp_ipc_init), sizeof(struct mchp_ipc_sbi_msg));
+	size_t max_size = max3(sizeof(struct mchp_ipc_init), sizeof(struct mchp_ipc_sbi_msg),
+			       sizeof(struct mchp_ipc_sbi_rx_msg));
 
 	chan_info->buf_base_tx = kmalloc(max_size, GFP_KERNEL);
 	if (!chan_info->buf_base_tx) {
@@ -447,40 +481,30 @@ static struct mbox_chan *mchp_ipc_mbox_xlate(struct mbox_controller *controller,
 
 static int p64h_irq_get(struct mchp_ipc_sbi_mbox *ipc) {
 	struct platform_device *pdev = to_platform_device(ipc->dev);
-	int ret = 0;
+	int ret;
 	int irq;
-	unsigned long hartid;
-	u32 i;
 
 	/* Register the interrupt */
 	irq = platform_get_irq(pdev, 0);
-	if (irq >= 0) {
-		ret = devm_request_irq(ipc->dev, irq, mchp_p64h_ipc_isr, 0,
-				       pdev->name, ipc);
-		if (ret) {
-			dev_err(ipc->dev,
-				"cannot register interrupt handler err=%d\n",
-				ret);
-			return 0;
-		}
-		else {
-			for_each_online_cpu(i) {
-				hartid = cpuid_to_hartid_map(i);
-				printk("adding interrupt to hart %d-%d\n", hartid, i);
-				ipc->cluster_cfg[hartid].buf_base = devm_kmalloc(ipc->dev,
-								sizeof(struct mchp_ipc_status),
-								GFP_KERNEL);
+	if (irq < 0)
+		return 0;
 
-				if (!ipc->cluster_cfg[hartid].buf_base)
-					return 0;
-
-				ipc->cluster_cfg[hartid].buf_base_addr = __pa(ipc->cluster_cfg[hartid].buf_base);
-				ipc->cluster_cfg[hartid].irq = irq;
-				ret = 1;
-			}
-		}
+	ret = devm_request_irq(ipc->dev, irq, mchp_p64h_ipc_isr, 0,
+			       pdev->name, ipc);
+	if (ret) {
+		dev_err(ipc->dev, "cannot register interrupt handler err=%d\n", ret);
+		return 0;
 	}
-	return ret;
+
+	/*
+	 * A P64H device serves a single channel through a single interrupt. The
+	 * handler gets everything it needs from the receive call itself, so no
+	 * irq status buffer is needed here. Keep the irq in cluster_cfg[0] to
+	 * share the plumbing with the Mi-V IHC implementation.
+	 */
+	ipc->cluster_cfg[0].irq = irq;
+
+	return 1;
 }
 
 static int mchp_ipc_get_cluster_aggr_irq(struct mchp_ipc_sbi_mbox *ipc)
@@ -593,7 +617,7 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 	ipc->controller.of_xlate = mchp_ipc_mbox_xlate;
 
 	for (chan_id = 0; chan_id < ipc->controller.num_chans; chan_id++) {
-		priv = devm_kmalloc(dev, sizeof(*priv), GFP_KERNEL);
+		priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 		if (!priv)
 			return -ENOMEM;
 
@@ -612,6 +636,10 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 			irq_avail = true;
 	}
 	else if (ipc->hw_type == P64H_IPC) {
+		ret = of_property_read_u32(dev->of_node, "chan-id", &ipc->chan_id);
+		if (ret)
+			return dev_err_probe(dev, ret, "missing chan-id property\n");
+
 		ipc->cluster_cfg = devm_kcalloc(dev, num_online_cpus(),
 						sizeof(struct mchp_ipc_cluster_cfg),
 						GFP_KERNEL);

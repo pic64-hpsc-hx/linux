@@ -25,6 +25,7 @@ enum ipc_hw {
 
 struct mchp_ipc_sbi_mbox {
 	int id;
+	u32 chan_id;
 	struct platform_device *pdev;
 	struct device *dev;
 	struct mbox_chan *chans;
