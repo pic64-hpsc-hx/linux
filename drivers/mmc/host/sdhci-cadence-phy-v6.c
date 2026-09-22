@@ -140,6 +140,7 @@ struct sdhci_cdns6_phy {
 	u8 cp_io_mask_start;		/* bits [26:24] */
 
 	/* PHY_DQS_TIMING register fields */
+	bool cp_use_ext_lpbk_dqs;	/* bit [22] */
 	bool cp_use_phony_dqs;		/* bit [20] */
 	bool cp_use_phony_dqs_cmd;	/* bit [19] */
 
@@ -682,7 +683,9 @@ int sdhci_cdns6_phy_init(struct sdhci_cdns_priv *priv)
 	reg = sdhci_cdns6_read_phy_reg(priv, SDHCI_CDNS6_PHY_DQS_TIMING_REG);
 	reg &= ~SDHCI_CDNS6_PHY_DQS_TIMING_USE_PHONY_DQS;
 	reg &= ~SDHCI_CDNS6_PHY_DQS_TIMING_USE_PHONY_DQS_CMD;
-	reg |= SDHCI_CDNS6_PHY_DQS_TIMING_USE_EXT_LPBK_DQS;
+	reg &= ~SDHCI_CDNS6_PHY_DQS_TIMING_USE_EXT_LPBK_DQS;
+	reg |= FIELD_PREP(SDHCI_CDNS6_PHY_DQS_TIMING_USE_EXT_LPBK_DQS,
+			  phy->cp_use_ext_lpbk_dqs);
 	reg |= SDHCI_CDNS6_PHY_DQS_TIMING_USE_LPBK_DQS;
 	reg |= FIELD_PREP(SDHCI_CDNS6_PHY_DQS_TIMING_USE_PHONY_DQS, phy->cp_use_phony_dqs);
 	reg |= FIELD_PREP(SDHCI_CDNS6_PHY_DQS_TIMING_USE_PHONY_DQS_CMD, phy->cp_use_phony_dqs_cmd);
@@ -900,6 +903,10 @@ int sdhci_cdns6_phy_probe(struct platform_device *pdev, struct sdhci_cdns_priv *
 	}
 
 	phy->delay_element_org = phy->delay_element;
+
+	/* The external loopback DQS is not used on the P64H platform */
+	phy->cp_use_ext_lpbk_dqs =
+		!of_device_is_compatible(dev->of_node, "microchip,pic64hpsc-sdhci");
 
 	priv->phy = phy;
 

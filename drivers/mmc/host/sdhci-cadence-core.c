@@ -19,6 +19,11 @@
 #include "sdhci-cadence.h"
 
 /* HRS - Host Register Set (specific to Cadence) */
+
+/* HRS00 - General information */
+#define SDHCI_CDNS_HRS00		0x00
+#define SDHCI_CDNS_HRS00_SWR	BIT(0)	/* software reset */
+
 /* HRS04 (PHY access) bitfields (SD4HC) */
 #define   SDHCI_CDNS_HRS04_ACK			BIT(26)
 #define   SDHCI_CDNS_HRS04_RD			BIT(25)
@@ -32,6 +37,7 @@
 #define   SDHCI_CDNS_HRS06_TUNE			GENMASK(13, 8)
 #define   SDHCI_CDNS_HRS06_MODE			GENMASK(2, 0)
 #define   SDHCI_CDNS_HRS06_MODE_SD		0x0
+#define   SDHCI_CDNS_HRS06_MODE_MMC		0x1
 #define   SDHCI_CDNS_HRS06_MODE_MMC_SDR		0x2
 #define   SDHCI_CDNS_HRS06_MODE_MMC_DDR		0x3
 #define   SDHCI_CDNS_HRS06_MODE_MMC_HS200	0x4
@@ -362,6 +368,8 @@ static void sdhci_cdns_set_uhs_signaling(struct sdhci_host *host,
 					 unsigned int timing)
 {
 	struct sdhci_cdns_priv *priv = sdhci_cdns_priv(host);
+	bool is_emmc = (host->mmc->caps & MMC_CAP_NONREMOVABLE) &&
+		       !mmc_card_is_removable(host->mmc);
 	u32 mode;
 
 	switch (timing) {
@@ -380,14 +388,26 @@ static void sdhci_cdns_set_uhs_signaling(struct sdhci_host *host,
 		else
 			mode = SDHCI_CDNS_HRS06_MODE_MMC_HS400;
 		break;
+	case MMC_TIMING_LEGACY:
 	default:
-		mode = SDHCI_CDNS_HRS06_MODE_SD;
+		/*
+		 * timing == 0 (MMC_TIMING_LEGACY) is reached during the
+		 * initial low-speed init phase where eMMC CMD1 is issued.
+		 * For eMMC we MUST select the eMMC Legacy mode (a nonzero
+		 * "others" HRS06.EMM value) rather than SD mode (000b),
+		 * otherwise the eMMC never responds and CMD1 times out.
+		 * For SD cards, fall back to SD mode (000b).
+		 */
+		if (is_emmc)
+			mode = SDHCI_CDNS_HRS06_MODE_MMC;
+		else
+			mode = SDHCI_CDNS_HRS06_MODE_SD;
 		break;
 	}
 
 	sdhci_cdns_set_emmc_mode(priv, mode);
 
-	/* For SD, fall back to the default handler */
+	/* For SD (HRS06.EMM = 000b), fall back to the default handler */
 	if (mode == SDHCI_CDNS_HRS06_MODE_SD)
 		sdhci_set_uhs_signaling(host, timing);
 
@@ -523,6 +543,102 @@ static int sdhci_cdns6_agilex5_init(struct platform_device *pdev)
 	return 0;
 }
 
+/* Microchip P64H */
+#define P64H_INT_CLEAR_SD		BIT(3)
+
+static u16 sdhci_cdns_p64h_read_w(struct sdhci_host *host, int reg)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	u32 val;
+
+	/* Return the shadow so it stays in sync with the postponed write. */
+	if (reg == SDHCI_TRANSFER_MODE)
+		return pltfm_host->xfer_mode_shadow;
+
+	val = readl(host->ioaddr + (reg & ~0x3));
+
+	return (val >> ((reg & 0x2) * 8)) & 0xffff;
+}
+
+static u8 sdhci_cdns_p64h_read_b(struct sdhci_host *host, int reg)
+{
+	u32 val;
+
+	val = readl(host->ioaddr + (reg & ~0x3));
+
+	return (val >> ((reg & 0x3) * 8)) & 0xff;
+}
+
+static void sdhci_cdns_p64h_write_w(struct sdhci_host *host, u16 val, int reg)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_cdns_priv *priv = sdhci_pltfm_priv(pltfm_host);
+	int base = reg & ~0x3;
+	int shift = (reg & 0x2) * 8;
+	unsigned long flags;
+	u32 tmp;
+
+	/* Postpone; committed by the SDHCI_COMMAND write below. */
+	if (reg == SDHCI_TRANSFER_MODE) {
+		pltfm_host->xfer_mode_shadow = val;
+		return;
+	}
+
+	/* Single 32-bit write of mode + command; this issues the command. */
+	if (reg == SDHCI_COMMAND) {
+		tmp = ((u32)val << 16) | pltfm_host->xfer_mode_shadow;
+		writel(tmp, host->ioaddr + SDHCI_TRANSFER_MODE);
+		return;
+	}
+
+	spin_lock_irqsave(&priv->wrlock, flags);
+	tmp = readl(host->ioaddr + base);
+	tmp &= ~(0xffff << shift);
+	tmp |= (u32)val << shift;
+	writel(tmp, host->ioaddr + base);
+	spin_unlock_irqrestore(&priv->wrlock, flags);
+}
+
+static void sdhci_cdns_p64h_write_b(struct sdhci_host *host, u8 val, int reg)
+{
+	struct sdhci_cdns_priv *priv = sdhci_cdns_priv(host);
+	int base = reg & ~0x3;
+	int shift = (reg & 0x3) * 8;
+	unsigned long flags;
+	u32 tmp;
+
+	spin_lock_irqsave(&priv->wrlock, flags);
+	tmp = readl(host->ioaddr + base);
+	tmp &= ~(0xff << shift);
+	tmp |= (u32)val << shift;
+	writel(tmp, host->ioaddr + base);
+	spin_unlock_irqrestore(&priv->wrlock, flags);
+}
+
+static u32 sdhci_cdns_p64h_irq(struct sdhci_host *host, u32 intmask)
+{
+	struct sdhci_cdns_priv *priv = sdhci_cdns_priv(host);
+
+	sdhci_writel(host, intmask, SDHCI_INT_STATUS);
+	writel(P64H_INT_CLEAR_SD, priv->ctl_addr);
+
+	return intmask;
+}
+
+static int sdhci_cdns_p64h_init(struct platform_device *pdev)
+{
+	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct sdhci_cdns_priv *priv = sdhci_cdns_priv(host);
+
+	priv->ctl_addr = devm_platform_ioremap_resource_byname(pdev, "int_clear");
+	if (IS_ERR(priv->ctl_addr))
+		return dev_err_probe(&pdev->dev, PTR_ERR(priv->ctl_addr),
+				     "Failed to remap int_clear register\n");
+
+	spin_lock_init(&priv->wrlock);
+	return 0;
+}
+
 static const struct sdhci_ops sdhci_cdns4_ops = {
 	.set_clock = sdhci_set_clock,
 	.get_timeout_clock = sdhci_cdns_get_timeout_clock,
@@ -552,6 +668,20 @@ static const struct sdhci_ops sdhci_cdns6_agilex5_ops = {
 	.set_uhs_signaling = sdhci_cdns_set_uhs_signaling,
 	.hw_reset = sdhci_cdns6_hw_reset,
 	.set_dma_mask = sdhci_cdns_set_dma_mask,
+};
+
+static const struct sdhci_ops sdhci_cdns_p64h_ops = {
+	.read_w = sdhci_cdns_p64h_read_w,
+	.read_b = sdhci_cdns_p64h_read_b,
+	.write_w = sdhci_cdns_p64h_write_w,
+	.write_b = sdhci_cdns_p64h_write_b,
+	.set_clock = sdhci_cdns6_set_clock,
+	.get_timeout_clock = sdhci_cdns_get_timeout_clock,
+	.set_bus_width = sdhci_set_bus_width,
+	.reset = sdhci_reset,
+	.platform_execute_tuning = sdhci_cdns_execute_tuning,
+	.set_uhs_signaling = sdhci_cdns_set_uhs_signaling,
+	.irq = sdhci_cdns_p64h_irq,
 };
 
 static const struct sdhci_cdns_drv_data sdhci_cdns_uniphier_drv_data = {
@@ -596,6 +726,14 @@ static const struct sdhci_cdns_drv_data sdhci_cdns6_agilex5_drv_data = {
 static const struct sdhci_cdns_drv_data sdhci_cdns6_drv_data = {
 	.pltfm_data = {
 		.ops = &sdhci_cdns6_ops,
+	},
+};
+
+static const struct sdhci_cdns_drv_data sdhci_cdns_p64h_drv_data = {
+	.init = sdhci_cdns_p64h_init,
+	.pltfm_data = {
+		.ops = &sdhci_cdns_p64h_ops,
+		.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
 	},
 };
 
@@ -808,6 +946,10 @@ static const struct of_device_id sdhci_cdns_match[] = {
 	{
 		.compatible = "cdns,sd6hc",
 		.data = &sdhci_cdns6_drv_data,
+	},
+	{
+		.compatible = "microchip,pic64hpsc-sdhci",
+		.data = &sdhci_cdns_p64h_drv_data,
 	},
 	{ /* sentinel */ }
 };
