@@ -592,10 +592,12 @@
 #define GEM_RX_SCR_BYPASS_SIZE			1
 #define GEM_TX_SCR_BYPASS_OFFSET		8
 #define GEM_TX_SCR_BYPASS_SIZE			1
-#define GEM_TX_EN_OFFSET			1
-#define GEM_TX_EN_SIZE				1
+#define GEM_RX_SYNC_RESET_OFFSET        2
+#define GEM_RX_SYNC_RESET_SIZE          1
+#define GEM_TX_EN_OFFSET			    1
+#define GEM_TX_EN_SIZE				    1
 #define GEM_SIGNAL_OK_OFFSET			0
-#define GEM_SIGNAL_OK_SIZE			1
+#define GEM_SIGNAL_OK_SIZE			    1
 
 /* Bitfields in USX_STATUS. */
 #define GEM_USX_BLOCK_LOCK_OFFSET		0
