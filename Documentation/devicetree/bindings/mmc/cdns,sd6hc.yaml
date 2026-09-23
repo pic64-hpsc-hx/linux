@@ -9,19 +9,43 @@ title: Cadence SD6HC SD/SDIO/eMMC Host Controller
 maintainers:
   - Tanmay Kathpalia <tanmay.kathpalia@altera.com>
 
-description:
+description: |
   Cadence SD6HC is a sixth-generation SD/SDIO/eMMC host controller with an
   interface to a Cadence Combo PHY. The controller has separate card interface
   and bus interface clock domains.
 
+  On Altera Agilex5 the SDHC, Combo PHY and SDMMC OCP bridge are each reset
+  independently through the HPS Reset Manager.
+
+  On Microchip PIC64-HPSC the controller sits in the NVM subsystem and has no
+  reset controller. Its register interface only supports 32-bit accesses, and
+  its interrupt is aggregated with the other NVM subsystem peripherals, so a
+  second register region holding the shared NVM interrupt-clear register is
+  required to acknowledge the eMMC/SD source. The PIC64-HPSC Combo PHY closes
+  the DQS loopback internally, so no external loopback path is used.
+
 properties:
   compatible:
     items:
-      - const: altr,agilex5-sd6hc
+      - enum:
+          - altr,agilex5-sd6hc
+          - microchip,pic64hpsc-sdhci
       - const: cdns,sd6hc
 
   reg:
-    maxItems: 1
+    minItems: 1
+    items:
+      - description: SDHC register set (HRS and SRS)
+      - description:
+          Shared NVM subsystem interrupt-clear register, in which bit 3
+          acknowledges the eMMC/SD interrupt source. PIC64-HPSC only,
+          where it is mandatory.
+
+  reg-names:
+    minItems: 1
+    items:
+      - const: reg
+      - const: int_clear
 
   interrupts:
     maxItems: 1
@@ -80,11 +104,35 @@ required:
   - interrupts
   - clocks
   - clock-names
-  - resets
-  - reset-names
 
 allOf:
   - $ref: sdhci-common.yaml#
+  # The PIC64-HPSC is the exception on both counts: its interrupt is shared
+  # with the other NVM subsystem peripherals, so the aggregator's
+  # interrupt-clear register is needed as a second region.
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: microchip,pic64hpsc-sdhci
+    then:
+      properties:
+        reg:
+          minItems: 2
+        reg-names:
+          minItems: 2
+        resets: false
+        reset-names: false
+      required:
+        - reg-names
+    else:
+      properties:
+        reg:
+          maxItems: 1
+        reg-names: false
+      required:
+        - resets
+        - reset-names
 
 unevaluatedProperties: false
 
@@ -102,4 +150,33 @@ examples:
         reset-names = "sdhc-reset", "combophy", "sdmmc-ocp";
         iommus = <&smmu 5>;
         dma-coherent;
+    };
+
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        mmc@4001c038000 {
+            compatible = "microchip,pic64hpsc-sdhci", "cdns,sd6hc";
+            reg = <0x400 0x1c038000 0x0 0x2000>,
+                  <0x400 0x1c020500 0x0 0x4>;
+            reg-names = "reg", "int_clear";
+            interrupt-parent = <&nvm_intc>;
+            interrupts = <2 IRQ_TYPE_LEVEL_HIGH>;
+            clocks = <&Lpclk>, <&Lhclk>;
+            clock-names = "ciu", "biu";
+            bus-width = <8>;
+            non-removable;
+            max-frequency = <200000000>;
+            cap-mmc-highspeed;
+            mmc-ddr-1_8v;
+            mmc-hs200-1_8v;
+            mmc-hs400-1_8v;
+            mmc-hs400-enhanced-strobe;
+            no-sd;
+            no-sdio;
+        };
     };
