@@ -214,14 +214,9 @@ static irqreturn_t mchp_p64h_ipc_isr(int irq, void *data)
 
 	/*
 	 * On P64H each IPC channel is a separate device with its own interrupt,
-	 * so the channel that raised the irq is the one this device owns. Its
-	 * index is the "chan-id" read at probe time, which is also the id the
-	 * SBI implementation uses to look up the channel.
+	 * so the single channel this controller owns is the one that raised it.
 	 */
-	if (ipc->chan_id >= ipc->controller.num_chans)
-		return IRQ_NONE;
-
-	chan = &ipc->chans[ipc->chan_id];
+	chan = &ipc->chans[0];
 	chan_info = (struct mchp_ipc_sbi_chan *)chan->con_priv;
 
 	/*
@@ -243,11 +238,11 @@ static irqreturn_t mchp_p64h_ipc_isr(int irq, void *data)
 	for (pass = 0; pass < P64H_IPC_MAX_IRQ_PASSES; pass++) {
 		mchp_ipc_prepare_receive_req(chan);
 
-		ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_RECEIVE, ipc->chan_id,
+		ret = mchp_ipc_sbi_chan_send(SBI_EXT_IPC_RECEIVE, chan_info->id,
 					     chan_info->buf_base_rx_addr);
 		if (ret < 0) {
 			dev_err_ratelimited(ipc->dev, "channel %u receive failed ret=%d\n",
-					    ipc->chan_id, ret);
+					    chan_info->id, ret);
 			break;
 		}
 
@@ -269,7 +264,7 @@ static irqreturn_t mchp_p64h_ipc_isr(int irq, void *data)
 
 	if (pass == P64H_IPC_MAX_IRQ_PASSES)
 		dev_warn_ratelimited(ipc->dev, "channel %u irq events not draining\n",
-				     ipc->chan_id);
+				     chan_info->id);
 
 	return IRQ_HANDLED;
 }
@@ -471,6 +466,21 @@ static struct mbox_chan *mchp_ipc_mbox_xlate(struct mbox_controller *controller,
 	struct mchp_ipc_sbi_mbox *ipc = to_mchp_ipc_mbox(controller);
 	unsigned int chan_id = spec->args[0];
 
+	/*
+	 * A P64H device serves the single channel named by its own "chan-id",
+	 * so any other id a consumer asks for is a device tree error rather
+	 * than a channel of this controller.
+	 */
+	if (ipc->hw_type == P64H_IPC) {
+		if (chan_id != ipc->chan_id) {
+			dev_err(ipc->dev, "channel id %u does not match chan-id %u\n",
+				chan_id, ipc->chan_id);
+			return ERR_PTR(-EINVAL);
+		}
+
+		return &ipc->chans[0];
+	}
+
 	if (chan_id >= ipc->controller.num_chans) {
 		dev_err(ipc->dev, "invalid channel id %d\n", chan_id);
 		return ERR_PTR(-EINVAL);
@@ -479,32 +489,25 @@ static struct mbox_chan *mchp_ipc_mbox_xlate(struct mbox_controller *controller,
 	return &ipc->chans[chan_id];
 }
 
-static int p64h_irq_get(struct mchp_ipc_sbi_mbox *ipc) {
+static int p64h_irq_get(struct mchp_ipc_sbi_mbox *ipc)
+{
 	struct platform_device *pdev = to_platform_device(ipc->dev);
-	int ret;
 	int irq;
 
-	/* Register the interrupt */
+	/*
+	 * A P64H device serves a single channel through a single interrupt, and
+	 * the handler gets everything it needs from the receive call itself, so
+	 * nothing about the irq has to be kept once it is registered. Report
+	 * the error rather than folding it into "no irq": each channel device
+	 * sits behind the APLIC, so platform_get_irq() can legitimately ask to
+	 * be probed again later.
+	 */
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		return 0;
+		return irq;
 
-	ret = devm_request_irq(ipc->dev, irq, mchp_p64h_ipc_isr, 0,
+	return devm_request_irq(ipc->dev, irq, mchp_p64h_ipc_isr, 0,
 			       pdev->name, ipc);
-	if (ret) {
-		dev_err(ipc->dev, "cannot register interrupt handler err=%d\n", ret);
-		return 0;
-	}
-
-	/*
-	 * A P64H device serves a single channel through a single interrupt. The
-	 * handler gets everything it needs from the receive call itself, so no
-	 * irq status buffer is needed here. Keep the irq in cluster_cfg[0] to
-	 * share the plumbing with the Mi-V IHC implementation.
-	 */
-	ipc->cluster_cfg[0].irq = irq;
-
-	return 1;
 }
 
 static int mchp_ipc_get_cluster_aggr_irq(struct mchp_ipc_sbi_mbox *ipc)
@@ -601,8 +604,23 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret, "could not probe IPC SBI service\n");
 
 	memcpy(&ipc_info, ipc->buf_base, sizeof(struct mchp_ipc_mbox_info));
-	ipc->controller.num_chans = ipc_info.num_channels;
 	ipc->hw_type = ipc_info.hw_type;
+
+	if (ipc->hw_type == P64H_IPC) {
+		/*
+		 * On P64H every channel is its own device with its own
+		 * interrupt, and the SBI implementation looks a channel up by
+		 * the sparse "chan-id" rather than by an index, so this
+		 * controller owns a single channel whatever that id is.
+		 */
+		ret = of_property_read_u32(dev->of_node, "chan-id", &ipc->chan_id);
+		if (ret)
+			return dev_err_probe(dev, ret, "missing chan-id property\n");
+
+		ipc->controller.num_chans = 1;
+	} else {
+		ipc->controller.num_chans = ipc_info.num_channels;
+	}
 
 	ipc->chans = devm_kcalloc(dev, ipc->controller.num_chans, sizeof(*ipc->chans), GFP_KERNEL);
 	if (!ipc->chans)
@@ -622,7 +640,8 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 			return -ENOMEM;
 
 		ipc->chans[chan_id].con_priv = priv;
-		priv->id = chan_id;
+		/* P64H keys its SBI calls by the device tree id, not by index. */
+		priv->id = (ipc->hw_type == P64H_IPC) ? ipc->chan_id : chan_id;
 	}
 
 	if (ipc->hw_type == MIV_IHC) {
@@ -636,19 +655,12 @@ static int mchp_ipc_probe(struct platform_device *pdev)
 			irq_avail = true;
 	}
 	else if (ipc->hw_type == P64H_IPC) {
-		ret = of_property_read_u32(dev->of_node, "chan-id", &ipc->chan_id);
+		ret = p64h_irq_get(ipc);
 		if (ret)
-			return dev_err_probe(dev, ret, "missing chan-id property\n");
+			return dev_err_probe(dev, ret,
+					     "cannot register interrupt handler\n");
 
-		ipc->cluster_cfg = devm_kcalloc(dev, num_online_cpus(),
-						sizeof(struct mchp_ipc_cluster_cfg),
-						GFP_KERNEL);
-		if (!ipc->cluster_cfg)
-			return -ENOMEM;
-
-		if (p64h_irq_get(ipc))
-			irq_avail = true;
-
+		irq_avail = true;
 	}
 
 	if (!irq_avail)
