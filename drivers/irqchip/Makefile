@@ -137,3 +137,4 @@ obj-$(CONFIG_MCHP_EIC)			+= irq-mchp-eic.o
 obj-$(CONFIG_POLARFIRE_SOC_IRQ_MUX)	+= irq-mpfs-mux.o
 obj-$(CONFIG_SOPHGO_SG2042_MSI)		+= irq-sg2042-msi.o
 obj-$(CONFIG_SUNPLUS_SP7021_INTC)	+= irq-sp7021-intc.o
+obj-$(CONFIG_P64H_NVM_INTC) += irq-mchp-p64h-nvm-intc.o
