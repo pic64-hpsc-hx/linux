@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/interrupt-controller/microchip,pic64hpsc-nvm-intc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Microchip PIC64-HPSC/HX NVM interrupt controller
+
+maintainers:
+  - Charles Perry <charles.perry@microchip.com>
+
+description: |
+  The xSPI, NAND and eMMC/SD controllers of the PIC64-HPSC/HX NVM
+  subsystem share a single level-high interrupt line to the RISC-V APLIC.
+  This controller latches the interrupt of each source, gates it with a
+  per-source enable bit, and exposes the current level of each source
+  line, so that the shared line can be demultiplexed.
+
+  The interrupt specifier of a child device has one cell, the local
+  source number, which is the bit of the source in the controller
+  registers:
+    - 2: xSPI
+    - 3: eMMC/SD
+    - 6: NAND
+
+  All the local sources are level high. The other bits of the controller
+  registers are error and wakeup signals, which are not valid local
+  sources.
+
+properties:
+  compatible:
+    const: microchip,pic64hpsc-nvm-intc
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: Shared NVM interrupt line, connected to the APLIC.
+
+  interrupt-controller: true
+
+  "#interrupt-cells":
+    const: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - interrupt-controller
+  - "#interrupt-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    bus {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        nvm_intc: interrupt-controller@4001c020000 {
+            compatible = "microchip,pic64hpsc-nvm-intc";
+            reg = <0x400 0x1c020000 0x0 0x518>;
+            interrupt-parent = <&aplic>;
+            interrupts = <80 IRQ_TYPE_LEVEL_HIGH>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+        };
+    };
