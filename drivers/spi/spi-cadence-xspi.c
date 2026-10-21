@@ -272,6 +272,9 @@
 #define MRVL_XSPI_POLL_TIMEOUT_US	1000
 #define MRVL_XSPI_POLL_DELAY_US		10
 
+/* Timeout for STIG command / SDMA completion waits */
+#define CDNS_XSPI_COMPLETE_TIMEOUT_MS	1000
+
 /* Macros for calculating data bits in generic command
  * Up to 10 bytes can be fit into cmd_registers
  * least significant is placed in cmd_reg[1]
@@ -687,6 +690,9 @@ static int cdns_xspi_send_stig_command(struct cdns_xspi_dev *cdns_xspi,
 	writel(FIELD_PREP(CDNS_XSPI_CTRL_WORK_MODE, CDNS_XSPI_WORK_MODE_STIG),
 	       cdns_xspi->iobase + CDNS_XSPI_CTRL_CONFIG_REG);
 
+	reinit_completion(&cdns_xspi->cmd_complete);
+	reinit_completion(&cdns_xspi->sdma_complete);
+
 	cdns_xspi->set_interrupts_handler(cdns_xspi, true);
 	cdns_xspi->sdma_error = false;
 
@@ -717,7 +723,13 @@ static int cdns_xspi_send_stig_command(struct cdns_xspi_dev *cdns_xspi,
 
 		cdns_xspi_trigger_command(cdns_xspi, cmd_regs);
 
-		wait_for_completion(&cdns_xspi->sdma_complete);
+		if (!wait_for_completion_timeout(
+			    &cdns_xspi->sdma_complete,
+			    msecs_to_jiffies(CDNS_XSPI_COMPLETE_TIMEOUT_MS))) {
+			cdns_xspi->set_interrupts_handler(cdns_xspi, false);
+			dev_err(cdns_xspi->dev, "SDMA trigger timeout\n");
+			return -ETIMEDOUT;
+		}
 		if (cdns_xspi->sdma_error) {
 			cdns_xspi->set_interrupts_handler(cdns_xspi, false);
 			return -EIO;
@@ -725,7 +737,13 @@ static int cdns_xspi_send_stig_command(struct cdns_xspi_dev *cdns_xspi,
 		cdns_xspi->sdma_handler(cdns_xspi);
 	}
 
-	wait_for_completion(&cdns_xspi->cmd_complete);
+	if (!wait_for_completion_timeout(
+		    &cdns_xspi->cmd_complete,
+		    msecs_to_jiffies(CDNS_XSPI_COMPLETE_TIMEOUT_MS))) {
+		cdns_xspi->set_interrupts_handler(cdns_xspi, false);
+		dev_err(cdns_xspi->dev, "Command completion timeout\n");
+		return -ETIMEDOUT;
+	}
 	cdns_xspi->set_interrupts_handler(cdns_xspi, false);
 
 	cmd_status = cdns_xspi_check_command_status(cdns_xspi);
