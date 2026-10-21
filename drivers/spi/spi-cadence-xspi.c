@@ -21,6 +21,7 @@
 #include <linux/limits.h>
 #include <linux/log2.h>
 #include <linux/bitrev.h>
+#include <linux/clk.h>
 
 #define CDNS_XSPI_MAGIC_NUM_VALUE	0x6522
 #define CDNS_XSPI_MAX_BANKS		8
@@ -1164,6 +1165,7 @@ static int cdns_xspi_probe(struct platform_device *pdev)
 	struct spi_controller *host = NULL;
 	struct cdns_xspi_dev *cdns_xspi = NULL;
 	struct resource *res;
+	struct clk *clk;
 	int ret;
 
 	host = devm_spi_alloc_host(dev, sizeof(*cdns_xspi));
@@ -1208,6 +1210,18 @@ static int cdns_xspi_probe(struct platform_device *pdev)
 	ret = cdns_xspi_of_get_plat_data(pdev);
 	if (ret)
 		return -ENODEV;
+
+	clk = devm_clk_get_optional_enabled(&pdev->dev, "sys");
+	if (IS_ERR(clk)) {
+		dev_err(dev, "Failed to initialize sys clock\n");
+		return PTR_ERR(clk);
+	}
+
+	clk = devm_clk_get_optional_enabled(&pdev->dev, "xspi");
+	if (IS_ERR(clk)) {
+		dev_err(dev, "Failed to initialize xspi clock\n");
+		return PTR_ERR(clk);
+	}
 
 	cdns_xspi->iobase = devm_platform_ioremap_resource_byname(pdev, "io");
 	if (IS_ERR(cdns_xspi->iobase)) {
