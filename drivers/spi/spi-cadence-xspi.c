@@ -363,7 +363,7 @@ struct cdns_xspi_dev {
 
 	int irq;
 	int cur_cs;
-	unsigned int sdmasize;
+	unsigned long sdmasize;
 
 	struct completion cmd_complete;
 	struct completion auto_cmd_complete;
@@ -859,7 +859,8 @@ static int cdns_xspi_adjust_mem_op_size(struct spi_mem *mem, struct spi_mem_op *
 	struct cdns_xspi_dev *cdns_xspi =
 		spi_controller_get_devdata(mem->spi->controller);
 
-	op->data.nbytes = clamp_val(op->data.nbytes, 0, cdns_xspi->sdmasize);
+	op->data.nbytes = clamp((unsigned long)op->data.nbytes, 0,
+				cdns_xspi->sdmasize);
 
 	return 0;
 }
