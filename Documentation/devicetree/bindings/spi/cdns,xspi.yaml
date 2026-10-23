@@ -17,9 +17,19 @@ description: |
 
 properties:
   compatible:
-    enum:
-      - cdns,xspi-nor
-      - marvell,cn10-xspi-nor
+    oneOf:
+      - items:
+          - enum:
+              - cdns,xspi-nor
+              - marvell,cn10-xspi-nor
+      - items:
+          - enum:
+              - microchip,pic64hpsc-xspi-nor
+          - const: cdns,xspi-nor
+      - items:
+          - const: microchip,pic64hx-xspi-nor
+          - const: microchip,pic64hpsc-xspi-nor
+          - const: cdns,xspi-nor
 
   reg:
     items:
