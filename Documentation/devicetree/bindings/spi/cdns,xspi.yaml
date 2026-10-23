@@ -50,6 +50,17 @@ properties:
   interrupts:
     maxItems: 1
 
+  clocks:
+    items:
+      - description: Drives most of the controller logic except the phy and
+          minicontroller modules
+      - description: Drives the minicontroller and phy modules
+
+  clock-names:
+    items:
+      - const: sys
+      - const: xspi
+
 required:
   - compatible
   - reg
