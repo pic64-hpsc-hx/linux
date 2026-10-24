@@ -619,6 +619,10 @@ static u32 sdhci_cdns_p64h_irq(struct sdhci_host *host, u32 intmask)
 {
 	struct sdhci_cdns_priv *priv = sdhci_cdns_priv(host);
 
+	/* No int_clear in the DT, the NVM intc handles the ack */
+	if (!priv->ctl_addr)
+		return intmask;
+
 	sdhci_writel(host, intmask, SDHCI_INT_STATUS);
 	writel(P64H_INT_CLEAR_SD, priv->ctl_addr);
 
@@ -630,10 +634,15 @@ static int sdhci_cdns_p64h_init(struct platform_device *pdev)
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_cdns_priv *priv = sdhci_cdns_priv(host);
 
-	priv->ctl_addr = devm_platform_ioremap_resource_byname(pdev, "int_clear");
-	if (IS_ERR(priv->ctl_addr))
-		return dev_err_probe(&pdev->dev, PTR_ERR(priv->ctl_addr),
-				     "Failed to remap int_clear register\n");
+	/* int_clear is optional, absent with the NVM intc */
+	priv->ctl_addr = NULL;
+	if (platform_get_resource_byname(pdev, IORESOURCE_MEM, "int_clear")) {
+		priv->ctl_addr = devm_platform_ioremap_resource_byname(pdev,
+								       "int_clear");
+		if (IS_ERR(priv->ctl_addr))
+			return dev_err_probe(&pdev->dev, PTR_ERR(priv->ctl_addr),
+					     "Failed to remap int_clear register\n");
+	}
 
 	spin_lock_init(&priv->wrlock);
 	return 0;
