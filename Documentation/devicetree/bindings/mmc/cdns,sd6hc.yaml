@@ -19,10 +19,13 @@ description: |
 
   On Microchip PIC64-HPSC the controller sits in the NVM subsystem and has no
   reset controller. Its register interface only supports 32-bit accesses, and
-  its interrupt is aggregated with the other NVM subsystem peripherals, so a
-  second register region holding the shared NVM interrupt-clear register is
-  required to acknowledge the eMMC/SD source. The PIC64-HPSC Combo PHY closes
-  the DQS loopback internally, so no external loopback path is used.
+  its interrupt is aggregated with the other NVM subsystem peripherals. When
+  the interrupt goes through the NVM interrupt controller
+  (microchip,pic64hpsc-nvm-intc), the controller acknowledges the eMMC/SD
+  source. Otherwise, a second register region holding the shared NVM
+  interrupt-clear register is needed to acknowledge it. The PIC64-HPSC Combo
+  PHY closes the DQS loopback internally, so no external loopback path is
+  used.
 
 properties:
   compatible:
@@ -39,7 +42,8 @@ properties:
       - description:
           Shared NVM subsystem interrupt-clear register, in which bit 3
           acknowledges the eMMC/SD interrupt source. PIC64-HPSC only,
-          where it is mandatory.
+          absent when the interrupt goes through the NVM interrupt
+          controller.
 
   reg-names:
     minItems: 1
@@ -107,9 +111,10 @@ required:
 
 allOf:
   - $ref: sdhci-common.yaml#
-  # The PIC64-HPSC is the exception on both counts: its interrupt is shared
-  # with the other NVM subsystem peripherals, so the aggregator's
-  # interrupt-clear register is needed as a second region.
+  # The PIC64-HPSC is the exception on both counts: it has no reset
+  # controller, and its interrupt is shared with the other NVM subsystem
+  # peripherals, so the aggregator's interrupt-clear register may be needed
+  # as a second region.
   - if:
       properties:
         compatible:
@@ -117,14 +122,8 @@ allOf:
             const: microchip,pic64hpsc-sdhci
     then:
       properties:
-        reg:
-          minItems: 2
-        reg-names:
-          minItems: 2
         resets: false
         reset-names: false
-      required:
-        - reg-names
     else:
       properties:
         reg:
@@ -133,6 +132,16 @@ allOf:
       required:
         - resets
         - reset-names
+  # The driver looks the interrupt-clear region up by name.
+  - if:
+      required:
+        - reg
+      properties:
+        reg:
+          minItems: 2
+    then:
+      required:
+        - reg-names
 
 unevaluatedProperties: false
 
@@ -153,19 +162,15 @@ examples:
     };
 
   - |
-    #include <dt-bindings/interrupt-controller/irq.h>
-
     soc {
         #address-cells = <2>;
         #size-cells = <2>;
 
         mmc@4001c038000 {
             compatible = "microchip,pic64hpsc-sdhci", "cdns,sd6hc";
-            reg = <0x400 0x1c038000 0x0 0x2000>,
-                  <0x400 0x1c020500 0x0 0x4>;
-            reg-names = "reg", "int_clear";
+            reg = <0x400 0x1c038000 0x0 0x2000>;
             interrupt-parent = <&nvm_intc>;
-            interrupts = <2 IRQ_TYPE_LEVEL_HIGH>;
+            interrupts = <3>;
             clocks = <&Lpclk>, <&Lhclk>;
             clock-names = "ciu", "biu";
             bus-width = <8>;
@@ -178,5 +183,26 @@ examples:
             mmc-hs400-enhanced-strobe;
             no-sd;
             no-sdio;
+        };
+    };
+
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        mmc@4001c038000 {
+            compatible = "microchip,pic64hpsc-sdhci", "cdns,sd6hc";
+            reg = <0x400 0x1c038000 0x0 0x2000>,
+                  <0x400 0x1c020500 0x0 0x4>;
+            reg-names = "reg", "int_clear";
+            interrupt-parent = <&aplic>;
+            interrupts = <80 IRQ_TYPE_LEVEL_HIGH>;
+            clocks = <&Lpclk>, <&Lhclk>;
+            clock-names = "ciu", "biu";
+            bus-width = <8>;
+            non-removable;
         };
     };
