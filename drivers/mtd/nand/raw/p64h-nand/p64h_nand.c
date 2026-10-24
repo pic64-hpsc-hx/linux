@@ -710,6 +710,14 @@ static int cadence_nand_set_access_width16(struct cdns_nand_ctrl *cdns_ctrl,
 }
 
 static void
+cadence_nand_clear_nvm_ss_interrupt(struct cdns_nand_ctrl *cdns_ctrl)
+{
+	/* No int_clear in the DT, the NVM intc handles the ack */
+	if (cdns_ctrl->nvm_ctrl_i_reg)
+		writel_relaxed(NVM_SS_INT_CLEAR_VAL, cdns_ctrl->nvm_ctrl_i_reg);
+}
+
+static void
 cadence_nand_clear_interrupt(struct cdns_nand_ctrl *cdns_ctrl,
 			     struct cadence_nand_irq_status *irq_status)
 {
@@ -718,13 +726,7 @@ cadence_nand_clear_interrupt(struct cdns_nand_ctrl *cdns_ctrl,
 		       cdns_ctrl->reg + TRD_COMP_INT_STATUS);
 	writel_relaxed(irq_status->trd_error,
 		       cdns_ctrl->reg + TRD_ERR_INT_STATUS);
-	writel_relaxed(NVM_SS_INT_CLEAR_VAL, cdns_ctrl->nvm_ctrl_i_reg);
-}
-
-static void
-cadence_nand_clear_nvm_ss_interrupt(struct cdns_nand_ctrl *cdns_ctrl)
-{
-	writel_relaxed(NVM_SS_INT_CLEAR_VAL, cdns_ctrl->nvm_ctrl_i_reg);
+	cadence_nand_clear_nvm_ss_interrupt(cdns_ctrl);
 }
 
 static void
@@ -754,7 +756,7 @@ static void cadence_nand_reset_irq(struct cdns_nand_ctrl *cdns_ctrl)
 	spin_lock_irqsave(&cdns_ctrl->irq_lock, flags);
 	memset(&cdns_ctrl->irq_status, 0, sizeof(cdns_ctrl->irq_status));
 	memset(&cdns_ctrl->irq_mask, 0, sizeof(cdns_ctrl->irq_mask));
-	writel_relaxed(NVM_SS_INT_CLEAR_VAL, cdns_ctrl->nvm_ctrl_i_reg);
+	cadence_nand_clear_nvm_ss_interrupt(cdns_ctrl);
 	reinit_completion(&cdns_ctrl->complete);
 	spin_unlock_irqrestore(&cdns_ctrl->irq_lock, flags);
 }
@@ -784,7 +786,7 @@ static irqreturn_t cadence_nand_isr(int irq, void *dev_id)
 			complete(&cdns_ctrl->complete);
 		/* Tell the OS that we've handled this. */
 		result = IRQ_HANDLED;
-	} else {
+	} else if (cdns_ctrl->nvm_ctrl_i_reg) {
 		cadence_nand_clear_nvm_ss_interrupt(cdns_ctrl);
 		result = IRQ_HANDLED;
 	}
@@ -1203,7 +1205,7 @@ static int cadence_nand_hw_init(struct cdns_nand_ctrl *cdns_ctrl)
 	 */
 	writel_relaxed(0, cdns_ctrl->reg + INTR_ENABLE);
 	writel_relaxed(0xFFFFFFFF, cdns_ctrl->reg + INTR_STATUS);
-	writel_relaxed(NVM_SS_INT_CLEAR_VAL, cdns_ctrl->nvm_ctrl_i_reg);
+	cadence_nand_clear_nvm_ss_interrupt(cdns_ctrl);
 
 	cadence_nand_get_caps(cdns_ctrl);
 	if (cadence_nand_read_bch_caps(cdns_ctrl))
@@ -3000,9 +3002,13 @@ static int cadence_nand_dt_probe(struct platform_device *ofdev)
 		return PTR_ERR(cdns_ctrl->io.virt);
 	cdns_ctrl->io.dma = res->start;
 
-	cdns_ctrl->nvm_ctrl_i_reg = devm_platform_ioremap_resource(ofdev, 2);
-	if (IS_ERR(cdns_ctrl->nvm_ctrl_i_reg))
-		return PTR_ERR(cdns_ctrl->nvm_ctrl_i_reg);
+	/* int_clear (3rd reg) is optional, absent with the NVM intc */
+	if (platform_get_resource(ofdev, IORESOURCE_MEM, 2)) {
+		cdns_ctrl->nvm_ctrl_i_reg =
+			devm_platform_ioremap_resource(ofdev, 2);
+		if (IS_ERR(cdns_ctrl->nvm_ctrl_i_reg))
+			return PTR_ERR(cdns_ctrl->nvm_ctrl_i_reg);
+	}
 
 	dt->clk = devm_clk_get(cdns_ctrl->dev, "nf_clk");
 	if (IS_ERR(dt->clk))
