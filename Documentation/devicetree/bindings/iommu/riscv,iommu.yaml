@@ -34,6 +34,7 @@ properties:
     oneOf:
       - items:
           - enum:
+              - microchip,pic64hpsc-iommu
               - qemu,riscv-iommu
           - const: riscv,iommu
       - items:
