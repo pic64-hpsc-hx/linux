@@ -96,6 +96,9 @@ struct sifive_fu540_macb_mgmt {
 #define MACB_MDIO_TIMEOUT	1000000 /* in usecs */
 
 /* CBS port transmit rate factors: 1000/interface_width */
+#define MACB_CBS_PORT_RATE_10G		12	/* should be 12.5, might not work*/
+#define MACB_CBS_PORT_RATE_5G		25
+#define MACB_CBS_PORT_RATE_2G5		50
 #define MACB_CBS_PORT_RATE_1G		125	/* 1000/8 for GMII (8-bit) */
 #define MACB_CBS_PORT_RATE_10_100M	250	/* 1000/4 for MII (4-bit) */
 
@@ -4479,19 +4482,12 @@ static int macb_cbs_add(struct net_device *netdev,
 		return -EINVAL;
 	}
 
-	/* qopt->idleslope is in kbps; convert to the units the hardware
-	 * register expects:
-	 * - High-speed GEM: fraction of port bandwidth, scaled to the full
-	 *   32-bit register range
-	 * - Standard MACB: the register counts bytes/sec in 1G (8-bit GMII)
-	 *   mode and nibbles/sec in 10/100 (4-bit MII) mode, so scale kbps
-	 *   by 1000/8 (125) or 1000/4 (250) respectively
-	 */
-	if (bp->caps & MACB_CAPS_HIGH_SPEED)
-		idleslope = DIV_ROUND_UP_ULL((u64)qopt->idleslope * U32_MAX, speed_kbps);
-	else
-		idleslope = (u32)qopt->idleslope * (kset.base.speed >= 1000 ?
-					       MACB_CBS_PORT_RATE_1G : MACB_CBS_PORT_RATE_10_100M);
+	idleslope = (u32)qopt->idleslope *
+		(kset.base.speed >= 10000 ? MACB_CBS_PORT_RATE_10G :
+		kset.base.speed >= 5000  ? MACB_CBS_PORT_RATE_5G :
+		kset.base.speed >= 2500  ? MACB_CBS_PORT_RATE_2G5 :
+		kset.base.speed >= 1000  ? MACB_CBS_PORT_RATE_1G :
+					MACB_CBS_PORT_RATE_10_100M);
 
 	scoped_guard(spinlock_irqsave, &bp->lock) {
 		/* Disable CBS for the queue before updating idleslope */
