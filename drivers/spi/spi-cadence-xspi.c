@@ -1310,6 +1310,14 @@ static const struct of_device_id cdns_xspi_of_match[] = {
 		.compatible = "marvell,cn10-xspi-nor",
 		.data = &marvell_driver_data,
 	},
+	{
+		.compatible = "microchip,p64h-appc-spi", /* Deprecated */
+		.data = &cdns_driver_data,
+	},
+	{
+		.compatible = "microchip,p64h-nvm-spi", /* Deprecated */
+		.data = &cdns_driver_data,
+	},
 	{ /* end of table */}
 };
 MODULE_DEVICE_TABLE(of, cdns_xspi_of_match);
