@@ -360,6 +360,7 @@ struct cdns_xspi_dev {
 	void __iomem *auxbase;
 	void __iomem *sdmabase;
 	void __iomem *xferbase;
+	void __iomem *int_clear;
 
 	int irq;
 	int cur_cs;
@@ -887,6 +888,9 @@ static irqreturn_t cdns_xspi_irq_handler(int this_irq, void *dev)
 	u32 irq_status;
 	irqreturn_t result = IRQ_NONE;
 
+	if (cdns_xspi->int_clear)
+		writel(BIT(2), cdns_xspi->int_clear);
+
 	irq_status = readl(cdns_xspi->iobase + CDNS_XSPI_INTR_STATUS_REG);
 	writel(irq_status, cdns_xspi->iobase + CDNS_XSPI_INTR_STATUS_REG);
 
@@ -1261,6 +1265,15 @@ static int cdns_xspi_probe(struct platform_device *pdev)
 				// For compatibility with older firmware
 				cdns_xspi->xferbase = cdns_xspi->iobase + 0x8000;
 			}
+		}
+	}
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "int_clear");
+	if (res) {
+		cdns_xspi->int_clear = devm_ioremap_resource(dev, res);
+		if (IS_ERR(cdns_xspi->int_clear)) {
+			dev_err(dev, "Failed to remap int_clear address\n");
+			return PTR_ERR(cdns_xspi->int_clear);
 		}
 	}
 
