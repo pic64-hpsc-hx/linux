@@ -738,7 +738,7 @@ MODULE_DEVICE_TABLE(of, sifve_pl2_pmu_of_match);
 
 static struct platform_driver sifive_pl2_pmu_driver = {
 	.probe	= sifive_pl2_pmu_probe,
-	.remove_new	= sifive_pl2_pmu_remove,
+	.remove		= sifive_pl2_pmu_remove,
 	.driver	= {
 		.name		= "sifive_pl2_pmu",
 		.of_match_table	= sifve_pl2_pmu_of_match,

@@ -634,7 +634,7 @@ MODULE_DEVICE_TABLE(of, sifive_ecache_pmu_of_match);
 
 static struct platform_driver sifive_ecache_pmu_driver = {
 	.probe	= sifive_ecache_pmu_probe,
-	.remove_new	= sifive_ecache_pmu_remove,
+	.remove		= sifive_ecache_pmu_remove,
 	.driver	= {
 		.name		= "sifive_ecache_pmu",
 		.of_match_table	= sifive_ecache_pmu_of_match,
