@@ -761,8 +761,15 @@ static void gem_shuffle_tx_one_ring(struct macb_queue *queue)
 		goto unlock;
 
 	if (!count) {
+		/* The hardware restarts at entry 0 and stops at the first
+		 * TX_USED descriptor it reads. Entry 0 may hold a stale
+		 * TSO/SG continuation buffer (TX_USED=0), so put the marker
+		 * there.
+		 */
+		macb_tx_desc(queue, 0)->ctrl = MACB_BIT(TX_USED);
 		queue->tx_head = 0;
 		queue->tx_tail = 0;
+		wmb();
 		goto unlock;
 	}
 
