@@ -780,6 +780,13 @@
 #define MACB_CAPS_NEED_TSUCLK			0x00000400
 #define MACB_CAPS_QUEUE_DISABLE			0x00000800
 #define MACB_CAPS_TC				0x00001000
+/* On some implementations (PIC64-HPSC), setting NCR.RE reloads the RX queue
+ * pointer (RBQP) with the ring base. The Cadence GEM documentation says the
+ * pointer is kept across NCR.RE toggling, and the driver relies on that. When
+ * this capability is set, RX restarts at slot 0 after a link up and the driver
+ * must restart its RX ring there as well.
+ */
+#define MACB_CAPS_RX_PTR_RESET_ON_RE		0x00002000
 #define MACB_CAPS_PCS				0x01000000
 #define MACB_CAPS_HIGH_SPEED			0x02000000
 #define MACB_CAPS_CLK_HW_CHG			0x04000000

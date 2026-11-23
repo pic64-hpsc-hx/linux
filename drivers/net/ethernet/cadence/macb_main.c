@@ -714,6 +714,8 @@ static void macb_mac_config(struct phylink_config *config, unsigned int mode,
 	spin_unlock_irqrestore(&bp->lock, flags);
 }
 
+static void gem_resync_rx_rings(struct macb *bp);
+
 static void macb_mac_link_down(struct phylink_config *config, unsigned int mode,
 			       phy_interface_t interface)
 {
@@ -887,6 +889,8 @@ static void macb_mac_link_up(struct phylink_config *config,
 	if (!(bp->caps & MACB_CAPS_MACB_IS_EMAC)) {
 		macb_set_tx_clk(bp, speed);
 		gem_shuffle_tx_rings(bp);
+		if (bp->caps & MACB_CAPS_RX_PTR_RESET_ON_RE)
+			gem_resync_rx_rings(bp);
 	}
 
 	/* Enable Rx and Tx; Enable PTP unicast */
@@ -2756,6 +2760,39 @@ static void gem_init_rx_ring(struct macb_queue *queue)
 	queue->rx_prepared_head = 0;
 
 	gem_rx_refill(queue);
+}
+
+/* On some implementations, setting NCR.RE reloads RBQP with the ring base, so
+ * reception restarts at slot 0 whatever rx_tail is. Reset the software side to
+ * match.
+ */
+static void gem_resync_rx_rings(struct macb *bp)
+{
+	struct macb_queue *queue;
+	unsigned int q;
+
+	if (!macb_is_gem(bp) || !netif_running(bp->dev))
+		return;
+
+	/* The ring must not be touched while the receiver can still write to it */
+	if (macb_readl(bp, NCR) & MACB_BIT(RE))
+		return;
+
+	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
+		unsigned int old_tail = queue->rx_tail;
+
+		if (!queue->rx_ring || !queue->rx_skbuff ||
+		    !macb_rx_ring_wrap(bp, old_tail))
+			continue;
+
+		/* gem_rx() runs from NAPI and owns rx_tail and rx_skbuff: keep it out */
+		napi_disable(&queue->napi_rx);
+		gem_init_rx_ring(queue);
+		napi_enable(&queue->napi_rx);
+
+		netdev_dbg(bp->dev, "q%u: RX ring reset to slot 0 (rx_tail was %u)\n",
+			   q, old_tail);
+	}
 }
 
 static void gem_init_rings(struct macb *bp)
@@ -5706,7 +5743,7 @@ static const struct macb_config raspberrypi_rp1_config = {
 static const struct macb_config pic64hpsc_config = {
 	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE | MACB_CAPS_JUMBO |
 		MACB_CAPS_GEM_HAS_PTP | MACB_CAPS_USRIO_DISABLED |
-		MACB_CAPS_TC,
+		MACB_CAPS_TC | MACB_CAPS_RX_PTR_RESET_ON_RE,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
 	.init = init_reset_optional,
