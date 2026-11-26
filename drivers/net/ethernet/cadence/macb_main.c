@@ -598,7 +598,7 @@ static int macb_usx_pcs_config(struct phylink_pcs *pcs,
 	struct macb *bp = container_of(pcs, struct macb, phylink_usx_pcs);
 
 	u32 config;
-	/* RX_SYNC_RESET deassert and assert SINGAL_OK bit 
+	/* RX_SYNC_RESET deassert and assert SINGAL_OK bit
 	* to indicate that the PCS is ready to receive data. */
 	config = gem_readl(bp, USX_CONTROL);
 	config &= ~GEM_BIT(RX_SYNC_RESET);
